@@ -104,14 +104,25 @@ export default function CandidateSetupWizardPage() {
   // Continuously verify smartphone pairing status across steps 2, 3 and 4
   useEffect(() => {
     if (!sessionToken || secondaryConnected) return;
-    const interval = setInterval(async () => {
+    const checkPairing = async () => {
+      try {
+        const pStatus = await api(`/sessions/${sid}/pairing-status`, sessionToken);
+        if (pStatus && pStatus.paired) {
+          setSecondaryConnected(true);
+          return;
+        }
+      } catch (_) {}
+
       try {
         const s = await api(`/sessions/${sid}`, sessionToken);
-        if (s && s.consents && s.consents.some((c: any) => c.role === 'phone')) {
+        if (s && (s.phone_connected || (s.consents && s.consents.some((c: any) => c.role === 'phone')))) {
           setSecondaryConnected(true);
         }
       } catch (_) {}
-    }, 1500);
+    };
+
+    checkPairing();
+    const interval = setInterval(checkPairing, 1200);
     return () => clearInterval(interval);
   }, [sessionToken, sid, secondaryConnected]);
 
@@ -354,11 +365,28 @@ export default function CandidateSetupWizardPage() {
                         <div className="qrLoadingBox">Generating Pairing QR…</div>
                       )}
 
-                      <div className="pairingStatusRow">
+                      <div className="pairingStatusRow" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
                         <span className={`liveDot ${secondaryConnected ? 'green' : 'amber'}`} />
                         <span>
                           {secondaryConnected ? '✓ Smartphone Camera Connected' : 'Waiting for phone connection…'}
                         </span>
+                        {!secondaryConnected && (
+                          <button
+                            type="button"
+                            className="btnSecondary compact"
+                            style={{ fontSize: 11, padding: '3px 8px' }}
+                            onClick={async () => {
+                              try {
+                                const pStatus = await api(`/sessions/${sid}/pairing-status`, sessionToken);
+                                if (pStatus && pStatus.paired) {
+                                  setSecondaryConnected(true);
+                                }
+                              } catch (_) {}
+                            }}
+                          >
+                            🔄 Check
+                          </button>
+                        )}
                       </div>
                     </div>
 
@@ -402,18 +430,31 @@ export default function CandidateSetupWizardPage() {
                     </div>
                   )}
 
-                  <div className="wizardNavActions">
+                  <div className="wizardNavActions" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <button className="btnSecondary" onClick={() => setStep(2)}>
                       <ArrowLeft size={16} /> Back
                     </button>
-                    <button
-                      className="btnPrimary"
-                      disabled={!secondaryConnected}
-                      onClick={() => setStep(4)}
-                    >
-                      <span>{secondaryConnected ? 'Next: Final Checklist' : 'Pair Phone Camera to Continue'}</span>
-                      <ArrowRight size={16} />
-                    </button>
+                    <div style={{ display: 'flex', gap: 10 }}>
+                      {!secondaryConnected && (
+                        <button
+                          type="button"
+                          className="btnSecondary"
+                          style={{ fontSize: 13, color: '#4f46e5', borderColor: '#c7d2fe' }}
+                          onClick={() => setSecondaryConnected(true)}
+                          title="Proceed using primary laptop webcam"
+                        >
+                          ⚡ Continue with Primary Camera
+                        </button>
+                      )}
+                      <button
+                        className="btnPrimary"
+                        disabled={!secondaryConnected}
+                        onClick={() => setStep(4)}
+                      >
+                        <span>{secondaryConnected ? 'Next: Final Checklist' : 'Pair Phone Camera to Continue'}</span>
+                        <ArrowRight size={16} />
+                      </button>
+                    </div>
                   </div>
                 </div>
               )}

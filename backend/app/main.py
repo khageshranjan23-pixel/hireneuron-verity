@@ -181,12 +181,15 @@ def public(s, a):
     if a['role'] in ('recruiter', 'admin', 'worker'):
         return s
     q = core.active(s)
+    phone_paired = any(x['role'] == 'phone' for x in s.get('consents', []))
     return {k: s[k] for k in ('id', 'state', 'current', 'revision', 'started_at', 'question_started_at', 'phase', 'pending_skip')} | {
         'candidate_name': s['config']['candidate_name'],
         'job_title': s['config']['job_title'],
         'question_count': len(s['questions']),
         'duration_minutes': s['config']['duration_minutes'],
         'answer_seconds': s['config']['answer_seconds'],
+        'phone_connected': phone_paired,
+        'consents': [{'role': x['role']} for x in s.get('consents', [])],
         'question': {k: q[k] for k in ('id', 'slot', 'text', 'followup', 'status', 'spans')} if q else None
     }
 
@@ -741,6 +744,14 @@ def pair(sid: str, a=Depends(auth)):
         nonce = secrets.token_urlsafe(32)
         c.execute('INSERT INTO pairing(hash,sid,expires) VALUES (?,?,?)', (core.digest(nonce), sid, time.time() + 180))
     return {'nonce': nonce, 'expires_in': 180}
+
+@app.get('/sessions/{sid}/pairing-status')
+def pairing_status(sid: str, a=Depends(auth)):
+    allow(a, sid, ['candidate', 'phone', 'recruiter', 'admin', 'worker'])
+    with store.connect() as c:
+        s = store.get(c, sid)
+    paired = any(x['role'] == 'phone' for x in s.get('consents', []))
+    return {'paired': paired, 'state': s['state']}
 
 @app.post('/pair/redeem')
 def redeem(body: Pair):
