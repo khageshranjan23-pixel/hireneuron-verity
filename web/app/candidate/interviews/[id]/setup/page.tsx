@@ -156,6 +156,21 @@ export default function CandidateSetupWizardPage() {
         accepted: true,
         policy_version: '2026-10-25'
       });
+      if (consentRecording) {
+        try {
+          await api(`/sessions/${sid}/consent`, sessionToken, 'POST', {
+            accepted: true,
+            policy_version: '2026-10-25',
+            role: 'candidate_recording'
+          });
+        } catch (_) {}
+      }
+      try {
+        await api(`/sessions/${sid}/start`, sessionToken, 'POST');
+      } catch (startErr: any) {
+        // If already started, that's fine
+        console.warn('Start notice:', startErr?.message);
+      }
       router.push(`/candidate/interviews/${sid}/live`);
     } catch (err: any) {
       setError(err.message || 'Failed to start interview.');

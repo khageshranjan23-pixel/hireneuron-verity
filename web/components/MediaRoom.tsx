@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { Room, RoomEvent, LocalVideoTrack, LocalAudioTrack, Track } from 'livekit-client';
+import { Room, RoomEvent, Track } from 'livekit-client';
 import { api } from './api';
 import {
   Camera,
@@ -20,6 +20,13 @@ import dynamic from 'next/dynamic';
 import BrowserProctor from './BrowserProctor';
 
 const AIProctorEngine = dynamic(() => import('./AIProctorEngine'), { ssr: false });
+
+export interface RemoteTrackItem {
+  sid: string;
+  track: any;
+  identity: string;
+  isPhone: boolean;
+}
 
 export default function MediaRoom({
   sid,
@@ -44,11 +51,9 @@ export default function MediaRoom({
   onSecondaryChange?: (connected: boolean) => void;
   onProctoringAlert?: (alert: { type: string; message: string; severity: string; time: number }) => void;
 }) {
-  const host = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState('Connecting media…');
   const [hasSecondary, setHasSecondary] = useState(false);
   const [currentAlert, setCurrentAlert] = useState<{ type: string; message: string; severity: string; time: number } | null>(null);
-  const [motionLevel, setMotionLevel] = useState(0);
 
   // Live telemetry metrics
   const [gazeStatus, setGazeStatus] = useState<'focused' | 'away' | 'reading'>('focused');
@@ -57,15 +62,20 @@ export default function MediaRoom({
   const [speechStatus, setSpeechStatus] = useState<'quiet' | 'speaking' | 'coaching-suspect'>('quiet');
   const [calibrateCount, setCalibrateCount] = useState(0);
 
-  // Node references for AIProctorEngine
+  // Local media stream for candidate webcam or phone camera
   const [localMediaStream, setLocalMediaStream] = useState<MediaStream | null>(null);
-  const [localVideoNode, setLocalVideoNode] = useState<HTMLVideoElement | null>(null);
+
+  // Declarative remote video tracks state — avoids DOM clobbering from React re-renders!
+  const [remoteTracks, setRemoteTracks] = useState<RemoteTrackItem[]>([]);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
 
   const onProctoringAlertRef = useRef(onProctoringAlert);
   onProctoringAlertRef.current = onProctoringAlert;
+
+  const onSecondaryChangeRef = useRef(onSecondaryChange);
+  onSecondaryChangeRef.current = onSecondaryChange;
 
   // Stable Trigger Alert
   const triggerAlert = useCallback((type: string, message: string, severity: string) => {
@@ -77,7 +87,7 @@ export default function MediaRoom({
     }, 4500);
   }, []);
 
-  // Stable callbacks for proctoring children to prevent unnecessary rerenders
+  // Stable callbacks for proctoring children
   const handleBrowserViolation = useCallback((msg: string, severity: any) => {
     triggerAlert('BROWSER_VIOLATION', msg, severity);
     void api(`/sessions/${sid}/events`, token, 'POST', {
@@ -110,7 +120,6 @@ export default function MediaRoom({
   faceStatusRef.current = faceStatus;
 
   const handleTelemetryUpdate = useCallback((metrics: any) => {
-    // Map the robust gated presence state machine, NOT raw single-frame zero!
     if (metrics.presenceState === 'PERSON_OUT_OF_VIEW_CONFIRMED') {
       setFaceStatus('absent');
     } else if (metrics.presenceState === 'FACE_PARTIALLY_OBSCURED') {
@@ -129,7 +138,6 @@ export default function MediaRoom({
       setFaceStatus('normal');
     }
 
-    // v2: Enhanced gaze status with reading pattern detection
     if (metrics.readingPattern) {
       setGazeStatus('reading');
     } else if (metrics.gaze === 'focused') {
@@ -138,7 +146,6 @@ export default function MediaRoom({
       setGazeStatus('away');
     }
 
-    // v2: Enhanced audio status with multiple voice detection
     if (metrics.multipleVoices) {
       setAudioStatus('multi-voice');
     } else if (metrics.audio === 'clean') {
@@ -147,7 +154,6 @@ export default function MediaRoom({
       setAudioStatus('noisy');
     }
 
-    // v2: Speech/coaching status
     if (metrics.speakingWhileAway) {
       setSpeechStatus('coaching-suspect');
     } else if (metrics.isSpeaking) {
@@ -162,99 +168,84 @@ export default function MediaRoom({
     let localStream: MediaStream | null = null;
     let audioContext: AudioContext | null = null;
     let animationId: number | null = null;
+
+    // Disable adaptiveStream and dynacast so LiveKit SFU NEVER pauses the secondary camera feed!
     const room = new Room({
       autoSubscribe: !phone,
-      adaptiveStream: true,
-      dynacast: true
+      adaptiveStream: false,
+      dynacast: false
     });
-    const nodes = new Map<string, HTMLElement>();
 
-    // 1. Remote track handling (e.g. secondary phone camera or remote feeds)
-    const attachRemote = (track: any, identity: string) => {
+    const addRemoteTrack = (track: any, identity: string) => {
       if (closed) return;
       if (track.kind === 'audio') {
         const audioEl = track.attach();
         audioEl.style.display = 'none';
         document.body.appendChild(audioEl);
-        nodes.set('audio-' + (track.sid || identity), audioEl);
         return;
       }
-
-      // Video track
-      const isPhone = identity.startsWith('phone:');
-      const isPrimary = identity.startsWith('candidate:');
-
-      const el = track.attach();
-      el.muted = true;
-      el.autoplay = true;
-      el.playsInline = true;
-      el.setAttribute('playsinline', 'true');
-      el.setAttribute('webkit-playsinline', 'true');
-      el.style.width = '100%';
-      el.style.height = '100%';
-      el.style.objectFit = 'cover';
-      el.style.display = 'block';
-      void el.play().catch(() => {});
-
-      const wrapper = document.createElement('div');
-      wrapper.className = 'feedWrapper remoteFeed ' + (isPhone ? 'phoneFeedWrapper' : '');
-      wrapper.id = 'feed-' + (track.sid || identity);
-
-      const badge = document.createElement('div');
-      badge.className = 'feedBadge';
-      badge.innerHTML = isPhone
-        ? '<span class="statusDot active"></span> Secondary Camera (Phone Live)'
-        : isPrimary
-        ? '<span class="statusDot active"></span> Primary Camera (Laptop)'
-        : identity;
-
-      wrapper.appendChild(badge);
-      wrapper.appendChild(el);
-      host.current?.appendChild(wrapper);
-      nodes.set(track.sid || identity, wrapper);
-
-      if (isPhone) {
-        setHasSecondary(true);
-        onSecondaryChange?.(true);
+      if (track.kind === 'video') {
+        const isPhone = identity.startsWith('phone:');
+        setRemoteTracks((prev) => {
+          if (prev.some((t) => t.sid === (track.sid || identity))) return prev;
+          return [...prev, { sid: track.sid || identity, track, identity, isPhone }];
+        });
+        if (isPhone) {
+          setHasSecondary(true);
+          onSecondaryChangeRef.current?.(true);
+        }
       }
     };
 
-    room.on(RoomEvent.TrackSubscribed, (track, pub, p) => attachRemote(track, p.identity));
+    const removeRemoteTrack = (trackSid: string, identity: string) => {
+      setRemoteTracks((prev) => prev.filter((t) => t.sid !== trackSid && t.identity !== identity));
+      if (identity.startsWith('phone:')) {
+        setHasSecondary(false);
+        onSecondaryChangeRef.current?.(false);
+      }
+    };
+
+    // 1. LiveKit Room Event Listeners
+    room.on(RoomEvent.TrackSubscribed, (track, pub, p) => {
+      addRemoteTrack(track, p.identity);
+    });
+
     room.on(RoomEvent.ParticipantConnected, (p) => {
       if (p.identity.startsWith('phone:')) {
         setHasSecondary(true);
-        onSecondaryChange?.(true);
-        // Explicitly subscribe to all published tracks from the phone participant
-        // in case autoSubscribe hasn't fired yet for this late-arriving participant
-        p.trackPublications.forEach((pub) => {
-          if (!pub.isSubscribed) {
-            try { pub.setSubscribed(true); } catch (_) {}
-          }
-        });
+        onSecondaryChangeRef.current?.(true);
       }
+      p.trackPublications.forEach((pub) => {
+        if (!pub.isSubscribed) {
+          try { pub.setSubscribed(true); } catch (_) {}
+        } else if (pub.track) {
+          addRemoteTrack(pub.track, p.identity);
+        }
+      });
     });
-    // Also subscribe when phone publishes a new track after participant is already known
+
     room.on(RoomEvent.TrackPublished, (pub, p) => {
       if (p.identity.startsWith('phone:')) {
         setHasSecondary(true);
-        onSecondaryChange?.(true);
-        if (!pub.isSubscribed) {
-          try { pub.setSubscribed(true); } catch (_) {}
-        }
+        onSecondaryChangeRef.current?.(true);
+      }
+      if (!pub.isSubscribed) {
+        try { pub.setSubscribed(true); } catch (_) {}
       }
     });
+
     room.on(RoomEvent.TrackUnsubscribed, (track, pub, p) => {
-      if (track.sid) {
-        const w = nodes.get(track.sid);
-        if (w) {
-          w.remove();
-          nodes.delete(track.sid);
-        }
+      if (track) {
+        try { track.detach().forEach((el: any) => el.remove()); } catch (_) {}
+        removeRemoteTrack(track.sid, p?.identity || '');
       }
-      track.detach().forEach((el: any) => el.remove());
-      if (p?.identity.startsWith('phone:')) {
+    });
+
+    room.on(RoomEvent.ParticipantDisconnected, (p) => {
+      if (p.identity.startsWith('phone:')) {
         setHasSecondary(false);
-        onSecondaryChange?.(false);
+        onSecondaryChangeRef.current?.(false);
+        setRemoteTracks((prev) => prev.filter((t) => !t.identity.startsWith('phone:')));
       }
     });
 
@@ -262,7 +253,7 @@ export default function MediaRoom({
     room.on(RoomEvent.Reconnected, () => setStatus('Media reconnected'));
     room.on(RoomEvent.Disconnected, () => setStatus('Media disconnected'));
 
-    // Real-time data channel messages (captions + proctoring alerts from workers)
+    // Real-time data channel messages (transcripts + proctoring alerts)
     room.on(RoomEvent.DataReceived, (payload: Uint8Array) => {
       try {
         const decoded = new TextDecoder().decode(payload);
@@ -275,25 +266,19 @@ export default function MediaRoom({
           }
           onInterimTranscript?.('');
         } else if (msg.type === 'proctoring') {
-          // If candidate is confirmed present locally, do not let stale server messages override
           let text = 'ℹ️ Proctoring Observation';
           if (msg.event === 'MULTIPLE_PERSONS') {
             text = 'Multiple participants observed in camera view';
             setFaceStatus('multiple');
             triggerAlert(msg.event, text, msg.severity || 'NEEDS_REVIEW');
           } else if (msg.event === 'FACE_ABSENT') {
-            // Only alert if local state is also not normal
             if (faceStatusRef.current === 'absent' || faceStatusRef.current === 'unclear') {
               text = 'Please ensure you remain clearly positioned in the camera frame';
               setFaceStatus('absent');
               triggerAlert(msg.event, text, msg.severity || 'OBSERVED_EVENT');
             }
           } else if (msg.event === 'GAZE_DEVIATION' || msg.event === 'HEAD_TURN_PROLONGED') {
-            // Gentle reminder
             text = 'Please remain focused on the interview window';
-            triggerAlert(msg.event, text, 'OBSERVED_EVENT');
-          } else if (msg.event === 'FRAME_COVERAGE_GAP') {
-            text = 'Camera connection temporarily interrupted';
             triggerAlert(msg.event, text, 'OBSERVED_EVENT');
           } else if (msg.event === 'READING_PATTERN') {
             text = 'Suspicious reading pattern detected — please focus on the interview';
@@ -314,19 +299,20 @@ export default function MediaRoom({
       } catch (_) {}
     });
 
-    // 2. Immediate Local Media Acquisition & Preview
+    // 2. Acquire Local Media (Laptop webcam or phone rear camera)
     (async () => {
       if (!viewer) {
         try {
+          const constraints: MediaStreamConstraints = {
+            video: phone
+              ? { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }
+              : { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
+            audio: phone ? false : { echoCancellation: true, noiseSuppression: true }
+          };
+
           try {
-            const constraints: MediaStreamConstraints = {
-              video: phone
-                ? { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }
-                : { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
-              audio: phone ? false : { echoCancellation: true, noiseSuppression: true }
-            };
             localStream = await navigator.mediaDevices.getUserMedia(constraints);
-          } catch (initialErr) {
+          } catch (_) {
             localStream = await navigator.mediaDevices.getUserMedia(
               phone ? { video: true, audio: false } : { video: true, audio: true }
             );
@@ -338,42 +324,10 @@ export default function MediaRoom({
           }
 
           setLocalMediaStream(localStream);
-
           onDeviceStatus?.({
             camera: localStream.getVideoTracks().length > 0,
             mic: localStream.getAudioTracks().length > 0
           });
-
-          // Mount instant local video preview immediately
-          const videoTrack = localStream.getVideoTracks()[0];
-          let localVideoEl: HTMLVideoElement | null = null;
-          if (videoTrack) {
-            localVideoEl = document.createElement('video');
-            localVideoEl.muted = true;
-            localVideoEl.autoplay = true;
-            localVideoEl.playsInline = true;
-            localVideoEl.setAttribute('playsinline', 'true');
-            localVideoEl.setAttribute('webkit-playsinline', 'true');
-            localVideoEl.style.width = '100%';
-            localVideoEl.style.height = '100%';
-            localVideoEl.style.objectFit = 'cover';
-            localVideoEl.srcObject = new MediaStream([videoTrack]);
-            void localVideoEl.play().catch(() => {});
-
-            setLocalVideoNode(localVideoEl);
-
-            const wrapper = document.createElement('div');
-            wrapper.className = 'feedWrapper localFeed';
-            const badge = document.createElement('div');
-            badge.className = 'feedBadge';
-            badge.innerHTML = phone
-              ? '<span class="statusDot active"></span> Phone Rear Camera (Live Stream)'
-              : '<span class="statusDot active"></span> Primary Webcam (Live)';
-            wrapper.appendChild(badge);
-            wrapper.appendChild(localVideoEl);
-            host.current?.appendChild(wrapper);
-            nodes.set('local-video', wrapper);
-          }
 
           // Audio Meter
           const audioTrack = localStream.getAudioTracks()[0];
@@ -394,12 +348,9 @@ export default function MediaRoom({
                 if (closed) return;
                 analyser.getByteFrequencyData(dataArray);
                 let sum = 0;
-                for (let i = 0; i < dataArray.length; i++) {
-                  sum += dataArray[i];
-                }
+                for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
                 const avg = sum / dataArray.length;
-                const normalized = Math.min(100, Math.round((avg / 128) * 100));
-                onVolume?.(normalized);
+                onVolume?.(Math.min(100, Math.round((avg / 128) * 100)));
                 animationId = requestAnimationFrame(checkLevel);
               };
               checkLevel();
@@ -431,47 +382,54 @@ export default function MediaRoom({
         }
       }
 
-      // 3. Cloud LiveKit WebRTC Room Connection with explicit source metadata
+      // 3. Connect to LiveKit Room
       try {
         const creds = await api(`/sessions/${sid}/media`, token, 'POST');
         if (closed) return;
+
         await room.connect(creds.url, creds.token, {
           autoSubscribe: !phone
         });
+
         if (closed) {
           await room.disconnect();
           return;
         }
 
-        // Attach any tracks from participants already in room (e.g. phone secondary camera)
-        room.remoteParticipants.forEach((participant) => {
-          if (participant.identity.startsWith('phone:')) {
-            setHasSecondary(true);
-            onSecondaryChange?.(true);
-          }
-          participant.trackPublications.forEach((pub) => {
-            if (pub.isSubscribed && pub.track) {
-              attachRemote(pub.track, participant.identity);
-            } else if (!pub.isSubscribed && participant.identity.startsWith('phone:')) {
-              // Force subscribe to phone tracks not yet subscribed
-              try { pub.setSubscribed(true); } catch (_) {}
+        // Helper function to scan all remote participants and subscribe
+        const scanAndSubscribe = () => {
+          if (closed) return;
+          room.remoteParticipants.forEach((participant) => {
+            const isPhone = participant.identity.startsWith('phone:');
+            if (isPhone) {
+              setHasSecondary(true);
+              onSecondaryChangeRef.current?.(true);
             }
+            participant.trackPublications.forEach((pub) => {
+              if (pub.isSubscribed && pub.track) {
+                addRemoteTrack(pub.track, participant.identity);
+              } else if (!pub.isSubscribed) {
+                try { pub.setSubscribed(true); } catch (_) {}
+              }
+            });
           });
-        });
+        };
 
-        // Publish local tracks to LiveKit room with explicit source parameters
+        // Scan immediately after connect
+        scanAndSubscribe();
+
+        // Publish local tracks
         if (localStream) {
           for (const track of localStream.getTracks()) {
             if (closed) break;
             if (track.kind === 'video') {
-              const lvt = new LocalVideoTrack(track);
-              await room.localParticipant.publishTrack(lvt, {
+              await room.localParticipant.publishTrack(track, {
                 name: phone ? 'secondary' : 'camera',
-                source: Track.Source.Camera
+                source: Track.Source.Camera,
+                simulcast: false
               });
             } else if (track.kind === 'audio' && !phone) {
-              const lat = new LocalAudioTrack(track);
-              await room.localParticipant.publishTrack(lat, {
+              await room.localParticipant.publishTrack(track, {
                 name: 'microphone',
                 source: Track.Source.Microphone
               });
@@ -486,29 +444,21 @@ export default function MediaRoom({
             ? 'Live inspection feeds connected'
             : 'Media connected · AI proctoring active'
         );
+
         if (!phone) {
           await room.startAudio().catch(() => {});
         }
 
-        // Delayed re-scan: phone may have joined or published tracks during our
-        // local-media setup above. Run a catch-up scan 2 s after connect to
-        // subscribe to any phone tracks we may have missed.
+        // Periodic catch-up scan every 1.5 seconds to guarantee the phone track is always caught
         if (!phone && !viewer) {
-          setTimeout(() => {
-            if (closed) return;
-            room.remoteParticipants.forEach((participant) => {
-              if (!participant.identity.startsWith('phone:')) return;
-              setHasSecondary(true);
-              onSecondaryChange?.(true);
-              participant.trackPublications.forEach((pub) => {
-                if (pub.isSubscribed && pub.track) {
-                  attachRemote(pub.track, participant.identity);
-                } else if (!pub.isSubscribed) {
-                  try { pub.setSubscribed(true); } catch (_) {}
-                }
-              });
-            });
-          }, 2000);
+          const scanTimer = setInterval(() => {
+            if (closed) {
+              clearInterval(scanTimer);
+              return;
+            }
+            scanAndSubscribe();
+          }, 1500);
+          setTimeout(() => clearInterval(scanTimer), 30000); // 30s catch-up window
         }
       } catch (err) {
         setStatus(`Connected locally (${(err as Error).message})`);
@@ -527,7 +477,6 @@ export default function MediaRoom({
       }
       void room.disconnect();
 
-      // Finalize and upload local recording if chunks exist
       const rec = mediaRecorderRef.current;
       if (rec && rec.state !== 'inactive') {
         rec.stop();
@@ -596,17 +545,67 @@ export default function MediaRoom({
         </div>
       )}
 
-      {/* Video feeds grid — AIProctorEngine overlays here */}
-      <div className="feedsGrid" ref={host} style={{ position: 'relative' }}>
-        {/* AI Proctor Engine renders its canvas overlay INSIDE the feeds grid */}
-        {!phone && !viewer && localMediaStream && (
-          <AIProctorEngine
-            mediaStream={localMediaStream}
-            onViolation={handleProctorViolation}
-            onTelemetryUpdate={handleTelemetryUpdate}
-            calibrateTrigger={calibrateCount}
-          />
+      {/* ── VIDEO FEEDS GRID ── */}
+      <div className="feedsGrid" style={{ position: 'relative' }}>
+        {/* 1. Local Primary Feed (webcam or phone rear camera) */}
+        {localMediaStream && (
+          <div className="feedWrapper localFeed" style={{ position: 'relative' }}>
+            <div className="feedBadge">
+              <span className="statusDot active"></span>
+              {phone ? 'Phone Rear Camera (Live Stream)' : 'Primary Webcam (Live)'}
+            </div>
+            <video
+              ref={(el) => {
+                if (el && el.srcObject !== localMediaStream) {
+                  el.srcObject = localMediaStream;
+                  el.play().catch(() => {});
+                }
+              }}
+              autoPlay
+              playsInline
+              muted
+              style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+            />
+            {/* AI Proctor Engine overlay strictly on top of the primary webcam */}
+            {!phone && !viewer && (
+              <AIProctorEngine
+                mediaStream={localMediaStream}
+                onViolation={handleProctorViolation}
+                onTelemetryUpdate={handleTelemetryUpdate}
+                calibrateTrigger={calibrateCount}
+              />
+            )}
+          </div>
         )}
+
+        {/* 2. Remote Secondary Camera Feeds (e.g. Phone workspace camera) */}
+        {remoteTracks.map((item) => (
+          <div
+            key={item.sid}
+            className={`feedWrapper remoteFeed ${item.isPhone ? 'phoneFeedWrapper' : ''}`}
+            id={`feed-${item.sid}`}
+            style={{ position: 'relative' }}
+          >
+            <div className="feedBadge">
+              <span className="statusDot active"></span>
+              {item.isPhone ? 'Secondary Camera (Phone Live)' : item.identity}
+            </div>
+            <video
+              ref={(el) => {
+                if (el && item.track) {
+                  try {
+                    item.track.attach(el);
+                    el.play().catch(() => {});
+                  } catch (_) {}
+                }
+              }}
+              autoPlay
+              playsInline
+              muted
+              style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+            />
+          </div>
+        ))}
       </div>
 
       {/* Real-time Telemetry Status Matrix */}
