@@ -136,7 +136,7 @@ export default function Home() {
       candidate_profile: extractedProfile,
       skill_alignment: skillAlignment
     });
-    setLink(`${location.origin}/interview#${r.session.id}:${r.candidate_token}`);
+    setLink(`${location.origin}/interview?sid=${r.session.id}&token=${r.candidate_token}`);
     setSelected(r.session);
     await refresh();
     setView('report');

@@ -74,8 +74,8 @@ def prepare():
     final_token = cand_token
 
     tunnel_url = "https://controllers-futures-sql-watson.trycloudflare.com"
-    candidate_url = f"{tunnel_url}/interview#{sid}:{final_token}"
-    local_candidate_url = f"http://localhost:3000/interview#{sid}:{final_token}"
+    candidate_url = f"{tunnel_url}/interview?sid={sid}&token={final_token}"
+    local_candidate_url = f"http://localhost:3000/interview?sid={sid}&token={final_token}"
 
     print("\n" + "=" * 70)
     print("  LIVE PHYSICAL INTERVIEW READY")

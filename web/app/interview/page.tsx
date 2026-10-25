@@ -22,14 +22,31 @@ export default function Interview() {
   const [now, setNow] = useState(Date.now());
 
   useEffect(() => {
-    const raw = location.hash.slice(1);
-    if (raw) {
-      sessionStorage.setItem('verity_candidate', raw);
-      history.replaceState(null, '', location.pathname);
+    const params = new URLSearchParams(window.location.search);
+    const qSid = params.get('sid');
+    const qToken = params.get('token');
+    if (qSid && qToken) {
+      setSid(qSid);
+      setToken(qToken);
+      sessionStorage.setItem('verity_candidate', `${qSid}:${qToken}`);
+      return;
     }
-    const [id, t] = (raw || sessionStorage.getItem('verity_candidate') || '').split(':');
-    setSid(id || '');
-    setToken(t || '');
+
+    const raw = location.hash.slice(1);
+    if (raw && raw.includes(':')) {
+      sessionStorage.setItem('verity_candidate', raw);
+      const [id, t] = raw.split(':');
+      setSid(id || '');
+      setToken(t || '');
+      return;
+    }
+
+    const saved = sessionStorage.getItem('verity_candidate') || '';
+    if (saved && saved.includes(':')) {
+      const [id, t] = saved.split(':');
+      setSid(id || '');
+      setToken(t || '');
+    }
   }, []);
 
   useEffect(() => {
@@ -132,7 +149,25 @@ export default function Interview() {
         {!sid ? (
           <div className="card">
             <h1>Invitation link required.</h1>
-            <p>Please open the unique candidate link provided by your recruiter.</p>
+            <p>Please open the unique candidate link provided by your recruiter, or connect with your session credentials:</p>
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                const form = e.target as HTMLFormElement;
+                const inputSid = (form.elements.namedItem('sid') as HTMLInputElement)?.value.trim();
+                const inputToken = (form.elements.namedItem('token') as HTMLInputElement)?.value.trim();
+                if (inputSid && inputToken) {
+                  setSid(inputSid);
+                  setToken(inputToken);
+                  sessionStorage.setItem('verity_candidate', `${inputSid}:${inputToken}`);
+                }
+              }}
+              style={{ display: 'grid', gap: 12, marginTop: 16, maxWidth: 500 }}
+            >
+              <input name="sid" placeholder="Session ID (e.g. b279f950-3ec4-4a38-b1ab-b1524fdc3a50)" required />
+              <input name="token" placeholder="Invitation Token" required />
+              <button type="submit" className="primary">Connect to Interview</button>
+            </form>
           </div>
         ) : !s ? (
           <p>Connecting to interview session…</p>
