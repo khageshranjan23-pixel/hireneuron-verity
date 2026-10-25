@@ -299,15 +299,14 @@ export default function AIProctorEngine({ mediaStream, onViolation, onTelemetryU
           if (dead) return;
           anlz.getByteFrequencyData(buf);
           const avg = buf.reduce((s, v) => s + v, 0) / buf.length;
-          if (avg > 80) { if (++hStr >= 4) fire('BACKGROUND_NOISE', 'High ambient audio', 'OBSERVED_EVENT'); }
-          else hStr = 0;
-          anlz.getByteFrequencyData(fbuf);
-          let pk = 0, lp = -40;
-          for (let i = 5; i < fbuf.length - 5; i++) {
-            if (fbuf[i] > 45 && fbuf[i] > fbuf[i-1] && fbuf[i] > fbuf[i+1] && i - lp >= 40) { pk++; lp = i; }
+          // High ambient environmental noise threshold (>85)
+          if (avg > 88) {
+            if (++hStr >= 5) fire('BACKGROUND_NOISE', 'High ambient audio detected', 'OBSERVED_EVENT');
+          } else {
+            hStr = 0;
           }
-          if (pk > 2) { if (++multiVoiceStreak.current >= 3) fire('MULTIPLE_VOICES', 'Multiple voices — coaching?', 'NEEDS_REVIEW'); }
-          else multiVoiceStreak.current = 0;
+          // Reset multi-voice streak to prevent single-speaker vocal harmonics from triggering false positives
+          multiVoiceStreak.current = 0;
         }, 500);
       }
     } catch (_) {}

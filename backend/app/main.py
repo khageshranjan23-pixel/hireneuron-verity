@@ -38,10 +38,13 @@ class Consent(BaseModel):
     policy_version: Literal['2026-10-25'] = '2026-10-25'
 
 class Action(BaseModel):
-    action: Literal['answer', 'partial', 'repeat', 'request_skip', 'cancel_skip', 'skip', 'finish']
+    action: Literal['answer', 'partial', 'repeat', 'request_skip', 'cancel_skip', 'skip', 'finish', 'disqualify']
     text: str = Field(default='', max_length=20000)
     slot_id: str
     request_id: str = Field(min_length=8, max_length=100)
+
+class DisqualifyRequest(BaseModel):
+    reason: str = Field(default='Exceeded maximum permitted proctoring warnings (unfair means detected).', max_length=500)
 
 class Override(BaseModel):
     target_id: str
@@ -671,8 +674,22 @@ def action(sid: str, body: Action, a=Depends(auth)):
         s['processed'][body.request_id] = {'at': time.time(), 'payload': core.digest(body.model_dump_json())}
         if s['state'] == 'COMPLETED':
             store.update_schedule_status(c, sid, 'COMPLETED')
+        elif s['state'] == 'DISQUALIFIED':
+            store.update_schedule_status(c, sid, 'DISQUALIFIED')
         store.put(c, s)
     return {'state': public(s, a), 'message': message}
+
+@app.post('/sessions/{sid}/disqualify')
+def disqualify_session(sid: str, body: Optional[DisqualifyRequest] = None, a=Depends(auth)):
+    allow(a, sid, ['candidate', 'worker', 'recruiter', 'admin'])
+    reason = (body.reason if body else 'Exceeded maximum permitted proctoring warnings (unfair means detected).')
+    with store.tx() as c:
+        s = store.get(c, sid)
+        core.disqualify(s, reason)
+        store.update_schedule_status(c, sid, 'DISQUALIFIED')
+        store.put(c, s)
+        store.log_audit(c, a.get('id') or a.get('candidate_id'), 'SESSION_DISQUALIFIED', f"Session {sid} disqualified: {reason}")
+    return {'status': 'disqualified', 'reason': reason}
 
 @app.post('/sessions/{sid}/followup')
 async def followup(sid: str, body: Action, a=Depends(auth)):

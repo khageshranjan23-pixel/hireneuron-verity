@@ -101,6 +101,20 @@ export default function CandidateSetupWizardPage() {
     }
   }, [step, sessionToken]);
 
+  // Continuously verify smartphone pairing status across steps 2, 3 and 4
+  useEffect(() => {
+    if (!sessionToken || secondaryConnected) return;
+    const interval = setInterval(async () => {
+      try {
+        const s = await api(`/sessions/${sid}`, sessionToken);
+        if (s && s.consents && s.consents.some((c: any) => c.role === 'phone')) {
+          setSecondaryConnected(true);
+        }
+      } catch (_) {}
+    }, 1500);
+    return () => clearInterval(interval);
+  }, [sessionToken, sid, secondaryConnected]);
+
   const testSpeaker = () => {
     setSpeakerPlaying(true);
     try {
@@ -379,15 +393,25 @@ export default function CandidateSetupWizardPage() {
                     </div>
                   </div>
 
+                  {!secondaryConnected && (
+                    <div style={{ marginTop: 16, background: '#fffbeb', border: '1px solid #fef3c7', padding: '12px 16px', borderRadius: 8, color: '#92400e', fontSize: 13, display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <AlertCircle size={18} style={{ color: '#d97706', flexShrink: 0 }} />
+                      <span>
+                        <strong>Mandatory Requirement:</strong> Secondary smartphone camera pairing is required for this interview. Please scan the QR code with your mobile phone camera and tap Connect.
+                      </span>
+                    </div>
+                  )}
+
                   <div className="wizardNavActions">
                     <button className="btnSecondary" onClick={() => setStep(2)}>
                       <ArrowLeft size={16} /> Back
                     </button>
                     <button
                       className="btnPrimary"
+                      disabled={!secondaryConnected}
                       onClick={() => setStep(4)}
                     >
-                      <span>Next: Final Checklist</span>
+                      <span>{secondaryConnected ? 'Next: Final Checklist' : 'Pair Phone Camera to Continue'}</span>
                       <ArrowRight size={16} />
                     </button>
                   </div>
@@ -419,11 +443,11 @@ export default function CandidateSetupWizardPage() {
                       </div>
                     </div>
 
-                    <div className={`checkItem ${secondaryConnected ? 'pass' : 'info'}`}>
-                      <CheckCircle2 size={20} />
+                    <div className={`checkItem ${secondaryConnected ? 'pass' : 'danger'}`}>
+                      {secondaryConnected ? <CheckCircle2 size={20} /> : <AlertCircle size={20} style={{ color: '#ef4444' }} />}
                       <div>
                         <strong>Smartphone Camera</strong>
-                        <span>{secondaryConnected ? 'Connected & streaming' : 'Optional secondary mode active'}</span>
+                        <span>{secondaryConnected ? 'Connected & streaming live' : 'Required: Smartphone camera not connected'}</span>
                       </div>
                     </div>
 
@@ -444,8 +468,10 @@ export default function CandidateSetupWizardPage() {
                     <button
                       onClick={handleStartInterview}
                       className="btnLargeStart"
+                      disabled={!secondaryConnected}
+                      style={{ opacity: !secondaryConnected ? 0.6 : 1, cursor: !secondaryConnected ? 'not-allowed' : 'pointer' }}
                     >
-                      <span>Start Interview Now</span>
+                      <span>{secondaryConnected ? 'Start Interview Now' : 'Secondary Camera Required'}</span>
                       <ArrowRight size={20} />
                     </button>
                   </div>

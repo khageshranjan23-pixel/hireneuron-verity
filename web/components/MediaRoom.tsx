@@ -27,6 +27,7 @@ export default function MediaRoom({
   phone = false,
   viewer = false,
   onInterimTranscript,
+  onFinalTranscript,
   onDeviceStatus,
   onVolume,
   onSecondaryChange,
@@ -37,6 +38,7 @@ export default function MediaRoom({
   phone?: boolean;
   viewer?: boolean;
   onInterimTranscript?: (text: string) => void;
+  onFinalTranscript?: (text: string) => void;
   onDeviceStatus?: (status: { camera: boolean; mic: boolean }) => void;
   onVolume?: (level: number) => void;
   onSecondaryChange?: (connected: boolean) => void;
@@ -209,6 +211,12 @@ export default function MediaRoom({
     };
 
     room.on(RoomEvent.TrackSubscribed, (track, pub, p) => attachRemote(track, p.identity));
+    room.on(RoomEvent.ParticipantConnected, (p) => {
+      if (p.identity.startsWith('phone:')) {
+        setHasSecondary(true);
+        onSecondaryChange?.(true);
+      }
+    });
     room.on(RoomEvent.TrackUnsubscribed, (track, pub, p) => {
       if (track.sid) {
         const w = nodes.get(track.sid);
@@ -236,6 +244,9 @@ export default function MediaRoom({
         if (msg.type === 'interim') {
           onInterimTranscript?.(msg.text);
         } else if (msg.type === 'final') {
+          if (msg.text) {
+            onFinalTranscript?.(msg.text);
+          }
           onInterimTranscript?.('');
         } else if (msg.type === 'proctoring') {
           // If candidate is confirmed present locally, do not let stale server messages override
@@ -403,6 +414,19 @@ export default function MediaRoom({
           await room.disconnect();
           return;
         }
+
+        // Attach any tracks from participants already in room (e.g. phone secondary camera)
+        room.remoteParticipants.forEach((participant) => {
+          if (participant.identity.startsWith('phone:')) {
+            setHasSecondary(true);
+            onSecondaryChange?.(true);
+          }
+          participant.trackPublications.forEach((pub) => {
+            if (pub.isSubscribed && pub.track) {
+              attachRemote(pub.track, participant.identity);
+            }
+          });
+        });
 
         // Publish local tracks to LiveKit room with explicit source parameters
         if (localStream) {

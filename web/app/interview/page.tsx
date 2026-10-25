@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import QRCode from 'qrcode';
 import {
   ShieldCheck,
@@ -53,6 +53,60 @@ export default function CandidateInterview() {
   const [aiState, setAiState] = useState<'idle' | 'speaking' | 'listening' | 'thinking'>('idle');
   const [proctoringAlert, setProctoringAlert] = useState<{ type: string; message: string; severity: string; time: number } | null>(null);
   const [eventCount, setEventCount] = useState(0);
+
+  // Proctoring Warning Controller & Disqualification States
+  const MAX_WARNINGS = 3;
+  const [warningCount, setWarningCount] = useState(0);
+  const [warningsList, setWarningsList] = useState<Array<{ type: string; message: string; time: string }>>([]);
+  const [disqualified, setDisqualified] = useState(false);
+  const lastViolationTimeRef = useRef<{ [key: string]: number }>({});
+
+  const handleFinalTranscript = useCallback((finalChunk: string) => {
+    if (!finalChunk || !finalChunk.trim()) return;
+    const chunk = finalChunk.trim();
+    setText((prev) => {
+      if (!prev) return chunk;
+      if (prev.endsWith(chunk)) return prev;
+      return prev + ' ' + chunk;
+    });
+    setInterimText('');
+  }, []);
+
+  const triggerViolationWarning = useCallback((type: string, message: string) => {
+    const criticalViolations = [
+      'ELECTRONIC_DEVICE_DETECTED',
+      'MULTIPLE_PERSONS',
+      'FACE_ABSENT',
+      'LOOK_AWAY_SEVERE',
+      'READING_PATTERN',
+      'SPEAKING_WHILE_AWAY',
+      'TAB_SWITCH',
+      'BLUR'
+    ];
+    if (!criticalViolations.includes(type)) return;
+
+    const nowTime = Date.now();
+    const lastTime = lastViolationTimeRef.current[type] || 0;
+    if (nowTime - lastTime < 10000) return; // 10s cooldown per violation category
+    lastViolationTimeRef.current[type] = nowTime;
+
+    setWarningCount((prev) => {
+      const nextCount = prev + 1;
+      const timeStr = new Date().toLocaleTimeString();
+      setWarningsList((w) => [...w, { type, message, time: timeStr }]);
+
+      if (nextCount >= MAX_WARNINGS) {
+        setDisqualified(true);
+        if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+          window.speechSynthesis.cancel();
+        }
+        void api(`/sessions/${sid}/disqualify`, token, 'POST', {
+          reason: `Automatic disqualification: Exceeded ${MAX_WARNINGS} integrity warnings (${type})`
+        }).catch(() => {});
+      }
+      return nextCount;
+    });
+  }, [sid, token]);
 
   // Parse session and token from URL query params, hash, or sessionStorage
   useEffect(() => {
@@ -258,6 +312,7 @@ export default function CandidateInterview() {
                 severity: latest.severity || 'NEEDS_REVIEW',
                 time: Date.now()
               });
+              triggerViolationWarning(latest.type, msg);
             }
           }
         }
@@ -746,6 +801,21 @@ export default function CandidateInterview() {
                     <span className="categoryBadge">
                       {s.phase === 'followup' ? 'Contextual Follow-up' : s.question?.category || 'Primary Question'}
                     </span>
+                    <span style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 5,
+                      padding: '3px 9px',
+                      borderRadius: 6,
+                      fontSize: 11,
+                      fontWeight: 600,
+                      background: warningCount === 0 ? '#f0fdf4' : warningCount === 1 ? '#fefce8' : '#fef2f2',
+                      border: `1px solid ${warningCount === 0 ? '#bbf7d0' : warningCount === 1 ? '#fef08a' : '#fecaca'}`,
+                      color: warningCount === 0 ? '#15803d' : warningCount === 1 ? '#a16207' : '#b91c1c'
+                    }}>
+                      <ShieldCheck size={12} />
+                      <span>Integrity Strikes: {warningCount} / {MAX_WARNINGS}</span>
+                    </span>
                     <span className="integrityIndicator">
                       <ShieldCheck size={13} />
                       <span>Proctoring Active ({eventCount} Events)</span>
@@ -917,14 +987,75 @@ export default function CandidateInterview() {
                 sid={sid}
                 token={token}
                 onInterimTranscript={setInterimText}
+                onFinalTranscript={handleFinalTranscript}
                 onSecondaryChange={setSecondaryConnected}
-                onProctoringAlert={setProctoringAlert}
+                onProctoringAlert={(alert) => {
+                  setProctoringAlert(alert);
+                  triggerViolationWarning(alert.type, alert.message);
+                }}
               />
-              <div className="interviewProctoringPill">
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                marginTop: 8,
+                padding: '8px 12px',
+                background: secondaryConnected ? 'rgba(34, 197, 94, 0.12)' : 'rgba(239, 68, 68, 0.12)',
+                border: `1px solid ${secondaryConnected ? '#22c55e' : '#ef4444'}`,
+                borderRadius: 6,
+                fontSize: 12,
+                fontWeight: 600,
+                color: secondaryConnected ? '#15803d' : '#b91c1c'
+              }}>
+                <Smartphone size={15} />
+                <span>
+                  {secondaryConnected
+                    ? '✓ Secondary Camera: Streaming Live'
+                    : '⚠ Secondary Camera: Connecting / Reconnecting…'}
+                </span>
+              </div>
+              <div className="interviewProctoringPill" style={{ marginTop: 6 }}>
                 <ShieldCheck size={14} />
-                <span>Continuous Dual-Camera CV Monitoring Active</span>
+                <span>Dual-Perspective Proctoring Active</span>
               </div>
             </aside>
+          </div>
+        ) : (disqualified || s?.state === 'DISQUALIFIED') ? (
+          /* Disqualification Screen — Unfair Means Detected */
+          <div className="wizardCard standalone completionCard" style={{ borderColor: '#ef4444', borderTop: '4px solid #ef4444' }}>
+            <div className="completionIcon" style={{ background: '#fef2f2', color: '#ef4444' }}>
+              <AlertCircle size={56} style={{ color: '#ef4444' }} />
+            </div>
+            <h1 style={{ color: '#b91c1c', marginBottom: 8 }}>Interview Disqualified — Unfair Means Detected</h1>
+            <p style={{ color: '#475569', maxWidth: 580, margin: '0 auto 16px' }}>
+              This interview has been automatically closed because the permitted integrity limit (<strong>{MAX_WARNINGS} warning strikes</strong>) was exceeded.
+            </p>
+            <div style={{ background: '#fff1f2', border: '1px solid #fecdd3', borderRadius: 8, padding: '16px 20px', margin: '16px auto', maxWidth: 580, textAlign: 'left' }}>
+              <strong style={{ display: 'block', marginBottom: 10, color: '#9f1239', fontSize: 14 }}>Recorded Violation Incidents:</strong>
+              <ul style={{ margin: 0, paddingLeft: 20, color: '#be123c', fontSize: 13, lineHeight: 1.6 }}>
+                {warningsList.length > 0 ? (
+                  warningsList.map((w, idx) => (
+                    <li key={idx}>
+                      <strong>Strike {idx + 1} [{w.time}]:</strong> {w.message}
+                    </li>
+                  ))
+                ) : (
+                  <li>
+                    <strong>Strike 1:</strong> Integrity threshold exceeded ({s?.disqualification_reason || 'Proctoring violations logged'})
+                  </li>
+                )}
+              </ul>
+            </div>
+            <p className="muted" style={{ fontSize: 13, maxWidth: 540, margin: '0 auto 24px' }}>
+              All webcam & secondary camera feeds, timestamps, and integrity logs have been sealed with SHA-256 HMAC cryptographic signatures and submitted to the RTPL recruitment audit team.
+            </p>
+            <button
+              onClick={() => window.location.href = '/candidate/dashboard'}
+              className="btnPrimary"
+              style={{ margin: '0 auto' }}
+            >
+              Return to Candidate Dashboard
+            </button>
           </div>
         ) : (
           /* 4. Completion Screen */

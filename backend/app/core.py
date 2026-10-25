@@ -54,6 +54,14 @@ def finish(s):
   if q['status'] in ('PENDING','ANSWERING','ASKING'): q['status']='TIMED_OUT' if q['spans'] else 'UNANSWERED'
  s['state']='COMPLETED'
 
+def disqualify(s, reason='Exceeded maximum permitted proctoring warnings (unfair means detected).'):
+ for q in s['questions']:
+  if q['status'] in ('PENDING','ANSWERING','ASKING'): q['status']='UNANSWERED'
+ s['state']='DISQUALIFIED'
+ s['disqualified_at']=time.time()
+ s['disqualification_reason']=reason
+ s['audit'].append(dict(at=time.time(),by='proctor_controller',action='disqualify',note=reason))
+
 def start(s,now):
  if s['state']!='BLUEPRINT_FROZEN': raise ValueError('Interview already started or completed')
  if not any(c['role']=='candidate' for c in s['consents']): raise ValueError('Consent required')
@@ -86,6 +94,7 @@ def command(s,action,text,now,slot_id=None):
   if not s['pending_skip']: raise ValueError('Confirm skip first')
   q['status']='SKIPPED'; advance(s,now); return None
  if action=='finish': finish(s); return None
+ if action=='disqualify': disqualify(s, text or 'Exceeded maximum permitted proctoring warnings (unfair means detected).'); return None
  if action not in ('answer','partial'): raise ValueError('Unknown action')
  text=text.strip()
  if text: q['spans'].append(dict(id=uid(),text=text,offset=round(now-s['started_at'],3),phase=s['phase'],source='candidate_text'))
