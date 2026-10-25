@@ -108,6 +108,9 @@ export default function PublicHomePage() {
                 <span>Enter Candidate Portal</span>
                 <ArrowRight size={16} />
               </Link>
+              <div style={{ marginTop: 10, fontSize: 11, color: '#64748b', textAlign: 'center' }}>
+                Instant Trial Access: <code style={{ background: '#f1f5f9', padding: '2px 5px', borderRadius: 4, fontWeight: 600 }}>RTPL-CND-TRIAL</code> &middot; <code style={{ background: '#f1f5f9', padding: '2px 5px', borderRadius: 4, fontWeight: 600 }}>RTPLCandidate2026!</code>
+              </div>
             </div>
           </div>
         </div>

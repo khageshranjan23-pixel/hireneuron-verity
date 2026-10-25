@@ -13,6 +13,12 @@ export default function CandidateLoginPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
+  const fillTrialCredentials = () => {
+    setCandidateCode('RTPL-CND-TRIAL');
+    setPassword('RTPLCandidate2026!');
+    setError('');
+  };
+
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!candidateCode.trim() || !password.trim()) {
@@ -126,6 +132,50 @@ export default function CandidateLoginPage() {
               )}
             </button>
           </form>
+
+          {/* Trial / Demo Login Helper */}
+          <div style={{
+            marginTop: 20,
+            padding: '14px 16px',
+            background: 'linear-gradient(135deg, #eff6ff 0%, #f0fdf4 100%)',
+            border: '1px solid #bfdbfe',
+            borderRadius: 8
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+              <span style={{ fontSize: 13, fontWeight: 700, color: '#1e40af', display: 'flex', alignItems: 'center', gap: 6 }}>
+                ⚡ Trial & Demo Candidate Access
+              </span>
+              <button
+                type="button"
+                onClick={fillTrialCredentials}
+                style={{
+                  background: '#2563eb',
+                  color: '#ffffff',
+                  border: 'none',
+                  borderRadius: 6,
+                  padding: '4px 10px',
+                  fontSize: 11,
+                  fontWeight: 600,
+                  cursor: 'pointer'
+                }}
+              >
+                Auto-Fill Demo
+              </button>
+            </div>
+            <p style={{ margin: '0 0 8px 0', fontSize: 12, color: '#334155' }}>
+              Anyone can test the AI interviewer, secondary camera, and proctoring immediately:
+            </p>
+            <div style={{ display: 'flex', gap: 12, fontSize: 12, color: '#1e293b', flexWrap: 'wrap' }}>
+              <div>
+                <span style={{ color: '#64748b' }}>Candidate ID: </span>
+                <code style={{ background: '#e2e8f0', padding: '1px 5px', borderRadius: 4, fontWeight: 600 }}>RTPL-CND-TRIAL</code>
+              </div>
+              <div>
+                <span style={{ color: '#64748b' }}>Password: </span>
+                <code style={{ background: '#e2e8f0', padding: '1px 5px', borderRadius: 4, fontWeight: 600 }}>RTPLCandidate2026!</code>
+              </div>
+            </div>
+          </div>
 
           <div className="candidateHelpCard">
             <div className="helpCardHeader">

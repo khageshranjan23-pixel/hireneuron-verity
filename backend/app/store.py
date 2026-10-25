@@ -135,6 +135,54 @@ def init():
         for k, v in defaults.items():
             c.execute("INSERT OR IGNORE INTO platform_settings (key, value) VALUES (?, ?)", (k, v))
 
+        # Bootstrap permanent Trial Candidate & Active Demo Session
+        cand_row = c.execute("SELECT id FROM candidates WHERE candidate_code = 'RTPL-CND-TRIAL'").fetchone()
+        from .auth import hash_password
+        trial_pw = 'RTPLCandidate2026!'
+        trial_hash = hash_password(trial_pw)
+        now = time.time()
+        trial_cid = 'cnd-trial-001'
+
+        if not cand_row:
+            c.execute(
+                "INSERT INTO candidates (id, candidate_code, full_name, email, phone, password_hash, temp_password_unhashed, job_id, resume_text, is_active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)",
+                (trial_cid, 'RTPL-CND-TRIAL', 'Demo Candidate (Trial User)', 'trial@rtpl.internal', '+91 99999 88888', trial_hash, trial_pw, 'job-trial-001', 'Experienced Software Engineer with background in Python, React, and WebRTC systems.', now)
+            )
+            c.execute(
+                "INSERT OR IGNORE INTO recruitment_jobs (id, title, department, employment_type, description, required_skills, preferred_skills, experience_level, difficulty, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?)",
+                ('job-trial-001', 'Software Engineer (Live Trial & Demo)', 'Engineering', 'Full-time', 'Evaluation interview covering distributed systems, problem solving, WebRTC, and software design.', 'Python, JavaScript, WebRTC, System Design', 'FastAPI, Next.js', 'Mid-Level', 'intermediate', now, now)
+            )
+
+        # Update RTPL-CND-000001 password to match RTPLCandidate2026! as well
+        c.execute("UPDATE candidates SET password_hash = ?, temp_password_unhashed = ? WHERE candidate_code = 'RTPL-CND-000001'", (trial_hash, trial_pw))
+
+        # Ensure an active ready trial session exists for trial candidate
+        sched_row = c.execute("SELECT id FROM interview_schedules WHERE candidate_id = 'cnd-trial-001'").fetchone()
+        if not sched_row:
+            from . import core
+            trial_session_id = 'trial-session-rtpl-001'
+            session_cfg = {
+                'candidate_name': 'Demo Candidate (Trial)',
+                'job_title': 'Software Engineer (Live Trial & Demo)',
+                'job_description': 'Evaluation interview covering distributed systems, problem solving, WebRTC, and software design.',
+                'resume_text': 'Full Stack Developer with expertise in Python, WebRTC, real-time media, and API development.',
+                'skills': ['Python', 'JavaScript', 'WebRTC', 'System Design'],
+                'question_count': 10,
+                'duration_minutes': 60,
+                'answer_seconds': 120,
+                'difficulty': 'intermediate',
+                'categories': ['technical', 'scenario', 'experience', 'behavioral'],
+                'custom_questions': ['Explain how WebRTC establishes peer-to-peer audio and video connections.'],
+                'followups': True
+            }
+            s = core.new_session(session_cfg)
+            s['id'] = trial_session_id
+            c.execute('INSERT OR REPLACE INTO sessions(id, data) VALUES (?, ?)', (trial_session_id, json.dumps(s)))
+            c.execute(
+                "INSERT OR REPLACE INTO interview_schedules (id, session_id, candidate_id, job_id, title, scheduled_time, duration_minutes, early_join_minutes, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'SCHEDULED', ?)",
+                ('sched-trial-001', trial_session_id, trial_cid, 'job-trial-001', 'RTPL Technical Evaluation Trial', now - 120, 60, 60, now)
+            )
+
 @contextmanager
 def tx():
     c = connect()
