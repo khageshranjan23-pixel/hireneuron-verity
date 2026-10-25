@@ -98,10 +98,7 @@ export default function MediaRoom({
         if (!viewer) {
           const tracks = await createLocalTracks({
             audio: phone ? false : { echoCancellation: true, noiseSuppression: true },
-            video: {
-              facingMode: phone ? 'environment' : 'user',
-              resolution: { width: 640, height: 480, frameRate: 15 }
-            }
+            video: phone ? { facingMode: 'environment' } : { facingMode: 'user' }
           });
 
           const localStream = new MediaStream();
@@ -118,10 +115,17 @@ export default function MediaRoom({
             if (t.kind === 'video') {
               const el = t.attach();
               el.muted = true;
-              el.setAttribute('playsinline', '');
+              el.autoplay = true;
+              el.setAttribute('playsinline', 'true');
+              el.setAttribute('webkit-playsinline', 'true');
+              if (t.mediaStreamTrack) {
+                (el as HTMLVideoElement).srcObject = new MediaStream([t.mediaStreamTrack]);
+              }
+              void el.play().catch((err) => console.warn('Webcam playback notice:', err));
               
               const wrapper = document.createElement('div');
               wrapper.className = 'feedWrapper localFeed';
+              wrapper.onclick = () => void el.play().catch(() => {});
               const badge = document.createElement('div');
               badge.className = 'feedBadge';
               badge.innerText = phone ? 'Phone Rear Camera (Live)' : 'Your Primary Webcam';
