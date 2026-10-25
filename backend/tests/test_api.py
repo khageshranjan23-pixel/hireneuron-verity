@@ -69,7 +69,8 @@ def test_override_append_only(client):
  s=client.get('/sessions/'+sid,headers=headers()).json()
  assert len(s['audit'])==2 and s['questions'][0]['scores'] is None
 
-def test_missing_consent_and_provider(client):
+def test_missing_consent_and_provider(client,monkeypatch):
+ monkeypatch.delenv('GEMINI_API_KEY',raising=False)
  sid,h=create(client)
  assert client.post(f'/sessions/{sid}/start',headers=h).status_code==409
  assert client.post(f'/sessions/{sid}/evaluate',headers=headers()).status_code==409
