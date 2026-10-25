@@ -18,6 +18,7 @@ export default function Interview() {
   const [qr, setQr] = useState('');
   const [phoneLink, setPhoneLink] = useState('');
   const [copied, setCopied] = useState(false);
+  const [interimText, setInterimText] = useState('');
   const [now, setNow] = useState(Date.now());
 
   useEffect(() => {
@@ -210,7 +211,7 @@ export default function Interview() {
 
                 <section>
                   {capture ? (
-                    <MediaRoom sid={sid} token={token} />
+                    <MediaRoom sid={sid} token={token} onInterimTranscript={(t) => setInterimText(t)} />
                   ) : (
                     <div className="card empty">
                       <Mic size={40} />
@@ -252,6 +253,14 @@ export default function Interview() {
                       <p className="muted" style={{ fontStyle: 'italic' }}>
                         Listening for spoken response… (Or type in the text box below)
                       </p>
+                    )}
+                    {interimText && (
+                      <div style={{ marginTop: 8, padding: '8px 12px', background: '#f5f3ff', borderRadius: 6, border: '1px dashed #8b5cf6', color: '#6d28d9' }}>
+                        <span style={{ fontWeight: 600, fontSize: 11, display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <span className="dot" style={{ background: '#8b5cf6', width: 6, height: 6 }} /> Live Transcription:
+                        </span>
+                        <p style={{ margin: '4px 0 0', fontStyle: 'italic', fontSize: 13 }}>"{interimText}"</p>
+                      </div>
                     )}
                   </div>
 
@@ -310,7 +319,7 @@ export default function Interview() {
 
                 <section>
                   {capture ? (
-                    <MediaRoom sid={sid} token={token} />
+                    <MediaRoom sid={sid} token={token} onInterimTranscript={(t) => setInterimText(t)} />
                   ) : (
                     <div className="card">
                       <p>Media preview is paused on this view.</p>

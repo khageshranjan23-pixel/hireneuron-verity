@@ -95,8 +95,10 @@ export type RecordingInfo = {
   filename: string;
   sha256: string;
   size: number;
+  duration_seconds?: number;
   created_at: number;
   status: string;
+  provenance?: string;
 };
 
 export type Session = {

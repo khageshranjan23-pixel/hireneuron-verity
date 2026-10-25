@@ -8,12 +8,14 @@ export default function MediaRoom({
   sid,
   token,
   phone = false,
-  viewer = false
+  viewer = false,
+  onInterimTranscript
 }: {
   sid: string;
   token: string;
   phone?: boolean;
   viewer?: boolean;
+  onInterimTranscript?: (text: string) => void;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState('Connecting media…');
@@ -71,6 +73,17 @@ export default function MediaRoom({
     room.on(RoomEvent.Reconnected, () => setStatus('Media reconnected'));
     room.on(RoomEvent.Disconnected, () => setStatus('Media disconnected'));
     room.on(RoomEvent.TrackMuted, () => setStatus('A media track was muted'));
+    room.on(RoomEvent.DataReceived, (payload: Uint8Array) => {
+      try {
+        const decoded = new TextDecoder().decode(payload);
+        const msg = JSON.parse(decoded);
+        if (msg.type === 'interim') {
+          onInterimTranscript?.(msg.text);
+        } else if (msg.type === 'final') {
+          onInterimTranscript?.('');
+        }
+      } catch (_) {}
+    });
 
     (async () => {
       try {

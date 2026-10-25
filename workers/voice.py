@@ -115,11 +115,28 @@ async def run(sid):
                         nonlocal speaking
                         async for raw in ws:
                             ev = json.loads(raw)
-                            if ev.get('type') != 'Results' or not ev.get('is_final'):
+                            if ev.get('type') != 'Results':
                                 continue
+                            
+                            is_final = ev.get('is_final', False)
                             text = ev.get('channel', {}).get('alternatives', [{}])[0].get('transcript', '').strip()
                             if not text:
                                 continue
+                            
+                            # Publish interim transcript over LiveKit data channel for real-time candidate UI captions
+                            if not is_final:
+                                if not speaking:
+                                    try:
+                                        await room.local_participant.publish_data(json.dumps({'type': 'interim', 'text': text}))
+                                    except Exception:
+                                        pass
+                                continue
+                            
+                            # Clear interim preview on final chunk
+                            try:
+                                await room.local_participant.publish_data(json.dumps({'type': 'final', 'text': text}))
+                            except Exception:
+                                pass
                             
                             # Handle barge-in if candidate speaks while interviewer is talking
                             if speaking:

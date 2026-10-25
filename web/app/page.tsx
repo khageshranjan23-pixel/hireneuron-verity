@@ -1050,6 +1050,10 @@ export default function Home() {
 
                         <div style={{ marginTop: 16, display: 'grid', gap: 8, fontSize: 12 }}>
                           <p><strong>Recording File:</strong> {selected.recording.filename}</p>
+                          <p><strong>Capture Scope & Provenance:</strong> {selected.recording.provenance || 'Consented candidate laptop browser MediaRecorder capture (primary camera + microphone)'}</p>
+                          {selected.recording.duration_seconds !== undefined && (
+                            <p><strong>Duration:</strong> {selected.recording.duration_seconds} seconds</p>
+                          )}
                           <p><strong>SHA-256 Checksum:</strong> <code style={{ color: '#4338ca' }}>{selected.recording.sha256}</code></p>
                           <p><strong>File Size:</strong> {(selected.recording.size / (1024 * 1024)).toFixed(2)} MB</p>
                         </div>

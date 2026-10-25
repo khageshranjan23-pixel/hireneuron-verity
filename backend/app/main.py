@@ -309,7 +309,8 @@ async def upload_recording(sid:str,file:UploadFile=File(...),a=Depends(auth)):
   ext='.webm' if (file.filename or '').endswith('.webm') else '.mp4'
   rec_path=rec_dir/(sid+ext)
   rec_path.write_bytes(data)
-  s['recording']={'id':core.uid(),'filename':sid+ext,'sha256':sha,'size':len(data),'created_at':time.time(),'status':'finalized'}
+  dur=max(0,round(time.time()-(s['started_at'] or time.time()),1))
+  s['recording']={'id':core.uid(),'filename':sid+ext,'sha256':sha,'size':len(data),'duration_seconds':dur,'created_at':time.time(),'status':'finalized','provenance':'Consented candidate laptop browser MediaRecorder capture (primary camera + microphone)'}
   store.put(c,s)
  return {'status':'uploaded','sha256':sha,'size':len(data)}
 
