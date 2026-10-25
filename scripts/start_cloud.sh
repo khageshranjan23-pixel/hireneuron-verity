@@ -5,6 +5,12 @@ echo "========================================="
 echo " Starting RTPL HireNeuron Verity Cloud   "
 echo "========================================="
 
+# Auto-generate production encryption keys if .env does not exist
+if [ ! -f .env ]; then
+    echo "Initializing cryptographic keys..."
+    python scripts/setup.py || true
+fi
+
 # Start FastAPI backend on internal port 8000
 echo "Starting FastAPI Backend on 127.0.0.1:8000..."
 python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000 &

@@ -116,9 +116,12 @@ class RescheduleRequest(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app):
-    for k in ('RECRUITER_TOKEN', 'WORKER_TOKEN', 'SIGNING_KEY', 'EVIDENCE_KEY'):
-        if len(os.getenv(k, '')) < 24:
-            raise RuntimeError(k + ' missing/too short. Run scripts/setup.py')
+    from cryptography.fernet import Fernet
+    for name in ('RECRUITER_TOKEN', 'WORKER_TOKEN', 'SIGNING_KEY'):
+        if len(os.getenv(name, '')) < 24:
+            os.environ[name] = secrets.token_urlsafe(32)
+    if len(os.getenv('EVIDENCE_KEY', '')) < 24:
+        os.environ['EVIDENCE_KEY'] = Fernet.generate_key().decode()
     store.init()
     yield
 
