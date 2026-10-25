@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useRouter } from 'next/navigation';
 import {
   Calendar,
   Briefcase,
@@ -25,7 +25,6 @@ import { api, RecruitmentJob, Candidate } from '@/components/api';
 
 export default function ScheduleInterviewWizardPage() {
   const router = useRouter();
-  const searchParams = useSearchParams();
   const [token, setToken] = useState('');
   const [step, setStep] = useState(1);
   const [jobs, setJobs] = useState<RecruitmentJob[]>([]);
@@ -80,8 +79,9 @@ export default function ScheduleInterviewWizardPage() {
       setJobs(jbs);
       setCandidates(cnds);
 
-      const qJobId = searchParams.get('job_id');
-      const qCandId = searchParams.get('candidate_id');
+      const urlParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
+      const qJobId = urlParams?.get('job_id');
+      const qCandId = urlParams?.get('candidate_id');
 
       if (qJobId && jbs.some((j: any) => j.id === qJobId)) {
         setSelectedJobId(qJobId);
