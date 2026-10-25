@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: rtpl-hireneuron-verity
+    env: docker
+    dockerfilePath: Dockerfile
+    plan: free
+    region: oregon
+    envVars:
+      - key: PORT
+        value: 3000
+      - key: LIVEKIT_URL
+        value: wss://hireneuron-7uwkuoe4.livekit.cloud
+      - key: LIVEKIT_API_KEY
+        sync: false
+      - key: LIVEKIT_API_SECRET
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: DEEPGRAM_API_KEY
+        sync: false
+    disk:
+      name: verity-data
+      mountPath: /app/data
+      sizeGB: 1
