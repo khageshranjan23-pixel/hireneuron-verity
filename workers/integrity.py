@@ -39,6 +39,18 @@ async def run(sid):
     thumb=img.copy();thumb.thumbnail((320,240));sheet.paste(thumb,(i*320,20))
     draw.text((i*320+4,4),f'{role.upper()} · {stamp:.2f} UTC',fill='white')
    b=io.BytesIO();sheet.save(b,format='JPEG',quality=85)
+   try:
+    import json
+    await room.local_participant.publish_data(json.dumps({
+     'type': 'proctoring',
+     'event': kind,
+     'severity': severity,
+     'role': role,
+     'start': start,
+     'end': end
+    }))
+   except Exception:
+    pass
    r=await c.post(f'/sessions/{sid}/events',json=dict(
     role=role,type=kind,severity=severity,
     jpeg_b64=base64.b64encode(b.getvalue()).decode(),
@@ -63,7 +75,7 @@ async def run(sid):
   def subscribe(track,publication,participant):
    roles={'candidate:'+sid:'primary','phone:'+sid:'secondary'}
    role=roles.get(participant.identity)
-   if role and track.kind==rtc.TrackKind.KIND_VIDEO and publication.source==rtc.TrackSource.SOURCE_CAMERA:
+   if role and track.kind==rtc.TrackKind.KIND_VIDEO:
     if role in tasks:tasks[role].cancel()
     tasks[role]=asyncio.create_task(read(track,role));last[role]=time.time()
   room.on('track_subscribed',subscribe)

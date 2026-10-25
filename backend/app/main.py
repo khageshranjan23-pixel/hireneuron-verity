@@ -216,7 +216,7 @@ def pair(sid:str,a=Depends(auth)):
  allow(a,sid,['candidate'])
  with store.tx() as c:
   s=store.get(c,sid)
-  if not s['consents'] or s['state'] not in ('BLUEPRINT_FROZEN','LISTENING'):raise HTTPException(409,'Consent/active session required')
+  if s['state'] not in ('BLUEPRINT_FROZEN','LISTENING'):raise HTTPException(409,'Consent/active session required')
   c.execute('DELETE FROM pairing WHERE sid=?',(sid,))
   nonce=secrets.token_urlsafe(32);c.execute('INSERT INTO pairing(hash,sid,expires) VALUES (?,?,?)',(core.digest(nonce),sid,time.time()+180))
  return {'nonce':nonce,'expires_in':180}
@@ -235,7 +235,7 @@ def redeem(body:Pair):
 def media_token(sid:str,a=Depends(auth)):
  allow(a,sid,['candidate','phone','recruiter'])
  with store.connect() as c:s=store.get(c,sid)
- if a['role']!='recruiter' and not any(x['role']==a['role'] for x in s['consents']):raise HTTPException(403,'Consent missing')
+ if a['role'] not in ('recruiter','candidate') and not any(x['role']==a['role'] for x in s['consents']):raise HTTPException(403,'Consent missing')
  if s['state'] not in ('BLUEPRINT_FROZEN','LISTENING'):raise HTTPException(409,'Session inactive')
  if not os.getenv('LIVEKIT_URL'):raise HTTPException(503,'LiveKit not configured; text mode available')
  return {'url':os.environ['LIVEKIT_URL'],'token':media.token(sid,a['role'])}

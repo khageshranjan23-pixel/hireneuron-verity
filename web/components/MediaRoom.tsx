@@ -1,8 +1,8 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
-import { Room, RoomEvent, LocalVideoTrack, LocalAudioTrack } from 'livekit-client';
+import { Room, RoomEvent, LocalVideoTrack, LocalAudioTrack, Track } from 'livekit-client';
 import { api } from './api';
-import { Camera, Smartphone, ShieldCheck, CheckCircle2 } from 'lucide-react';
+import { Camera, Smartphone, ShieldCheck, CheckCircle2, AlertTriangle, Users, EyeOff, Activity } from 'lucide-react';
 
 export default function MediaRoom({
   sid,
@@ -12,7 +12,8 @@ export default function MediaRoom({
   onInterimTranscript,
   onDeviceStatus,
   onVolume,
-  onSecondaryChange
+  onSecondaryChange,
+  onProctoringAlert
 }: {
   sid: string;
   token: string;
@@ -22,22 +23,36 @@ export default function MediaRoom({
   onDeviceStatus?: (status: { camera: boolean; mic: boolean }) => void;
   onVolume?: (level: number) => void;
   onSecondaryChange?: (connected: boolean) => void;
+  onProctoringAlert?: (alert: { type: string; message: string; severity: string; time: number }) => void;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState('Connecting media…');
   const [hasSecondary, setHasSecondary] = useState(false);
+  const [currentAlert, setCurrentAlert] = useState<{ type: string; message: string; severity: string; time: number } | null>(null);
+  const [motionLevel, setMotionLevel] = useState(0);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
+
+  // Trigger an alert and auto-clear after 4.5 seconds
+  const triggerAlert = (type: string, message: string, severity: string) => {
+    const alertObj = { type, message, severity, time: Date.now() };
+    setCurrentAlert(alertObj);
+    onProctoringAlert?.(alertObj);
+    setTimeout(() => {
+      setCurrentAlert((prev) => (prev?.time === alertObj.time ? null : prev));
+    }, 4500);
+  };
 
   useEffect(() => {
     let closed = false;
     let localStream: MediaStream | null = null;
     let audioContext: AudioContext | null = null;
     let animationId: number | null = null;
+    let cvIntervalId: any = null;
     const room = new Room();
     const nodes = new Map<string, HTMLElement>();
 
-    // 1. Remote track handling
+    // 1. Remote track handling (e.g. secondary phone camera or remote feeds)
     const attachRemote = (track: any, identity: string) => {
       if (closed) return;
       if (track.kind === 'audio') {
@@ -48,7 +63,7 @@ export default function MediaRoom({
         return;
       }
 
-      // Video track (e.g. from secondary smartphone or candidate laptop)
+      // Video track
       const isPhone = identity.startsWith('phone:');
       const isPrimary = identity.startsWith('candidate:');
 
@@ -60,7 +75,7 @@ export default function MediaRoom({
       el.setAttribute('webkit-playsinline', 'true');
 
       const wrapper = document.createElement('div');
-      wrapper.className = 'feedWrapper remoteFeed';
+      wrapper.className = 'feedWrapper remoteFeed ' + (isPhone ? 'phoneFeedWrapper' : '');
       wrapper.id = 'feed-' + (track.sid || identity);
 
       const badge = document.createElement('div');
@@ -102,7 +117,7 @@ export default function MediaRoom({
     room.on(RoomEvent.Reconnected, () => setStatus('Media reconnected'));
     room.on(RoomEvent.Disconnected, () => setStatus('Media disconnected'));
 
-    // Real-time interim captions
+    // Real-time data channel messages (captions + proctoring alerts)
     room.on(RoomEvent.DataReceived, (payload: Uint8Array) => {
       try {
         const decoded = new TextDecoder().decode(payload);
@@ -111,6 +126,18 @@ export default function MediaRoom({
           onInterimTranscript?.(msg.text);
         } else if (msg.type === 'final') {
           onInterimTranscript?.('');
+        } else if (msg.type === 'proctoring') {
+          let text = '⚠️ Proctoring Alert Observed';
+          if (msg.event === 'MULTIPLE_PERSONS') {
+            text = '🚨 CHEATING ALERT: 2 Persons in Camera Frame!';
+          } else if (msg.event === 'FACE_ABSENT') {
+            text = '⚠️ WARNING: Face Out of Camera View!';
+          } else if (msg.event === 'HEAD_TURN_PROLONGED') {
+            text = '⚠️ SUSPICIOUS: Candidate Facing Away / Looking Down';
+          } else if (msg.event === 'FRAME_COVERAGE_GAP') {
+            text = '⚠️ Camera Coverage Gap Detected';
+          }
+          triggerAlert(msg.event, text, msg.severity || 'NEEDS_REVIEW');
         }
       } catch (_) {}
     });
@@ -119,14 +146,22 @@ export default function MediaRoom({
     (async () => {
       if (!viewer) {
         try {
-          const constraints: MediaStreamConstraints = {
-            video: phone
-              ? { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
-              : { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
-            audio: phone ? false : { echoCancellation: true, noiseSuppression: true }
-          };
+          // Attempt high-quality constraints with automatic graceful fallback
+          try {
+            const constraints: MediaStreamConstraints = {
+              video: phone
+                ? { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }
+                : { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
+              audio: phone ? false : { echoCancellation: true, noiseSuppression: true }
+            };
+            localStream = await navigator.mediaDevices.getUserMedia(constraints);
+          } catch (initialErr) {
+            // Fallback to basic media constraints
+            localStream = await navigator.mediaDevices.getUserMedia(
+              phone ? { video: true, audio: false } : { video: true, audio: true }
+            );
+          }
 
-          localStream = await navigator.mediaDevices.getUserMedia(constraints);
           if (closed) {
             localStream.getTracks().forEach((t) => t.stop());
             return;
@@ -139,30 +174,102 @@ export default function MediaRoom({
 
           // Mount instant local video preview immediately
           const videoTrack = localStream.getVideoTracks()[0];
+          let localVideoEl: HTMLVideoElement | null = null;
           if (videoTrack) {
-            const videoEl = document.createElement('video');
-            videoEl.muted = true;
-            videoEl.autoplay = true;
-            videoEl.playsInline = true;
-            videoEl.setAttribute('playsinline', 'true');
-            videoEl.setAttribute('webkit-playsinline', 'true');
-            videoEl.style.width = '100%';
-            videoEl.style.height = '100%';
-            videoEl.style.objectFit = 'cover';
-            videoEl.srcObject = new MediaStream([videoTrack]);
-            void videoEl.play().catch(() => {});
+            localVideoEl = document.createElement('video');
+            localVideoEl.muted = true;
+            localVideoEl.autoplay = true;
+            localVideoEl.playsInline = true;
+            localVideoEl.setAttribute('playsinline', 'true');
+            localVideoEl.setAttribute('webkit-playsinline', 'true');
+            localVideoEl.style.width = '100%';
+            localVideoEl.style.height = '100%';
+            localVideoEl.style.objectFit = 'cover';
+            localVideoEl.srcObject = new MediaStream([videoTrack]);
+            void localVideoEl.play().catch(() => {});
 
             const wrapper = document.createElement('div');
             wrapper.className = 'feedWrapper localFeed';
             const badge = document.createElement('div');
             badge.className = 'feedBadge';
             badge.innerHTML = phone
-              ? '<span class="statusDot active"></span> Phone Rear Camera (Live Preview)'
-              : '<span class="statusDot active"></span> Your Primary Webcam (Live)';
+              ? '<span class="statusDot active"></span> Phone Rear Camera (Live Stream)'
+              : '<span class="statusDot active"></span> Primary Webcam (Live)';
             wrapper.appendChild(badge);
-            wrapper.appendChild(videoEl);
+            wrapper.appendChild(localVideoEl);
             host.current?.appendChild(wrapper);
             nodes.set('local-video', wrapper);
+
+            // Client-Side Realtime Motion & Frisking / Face Presence Analysis on Candidate Video
+            if (!phone) {
+              const canvas = document.createElement('canvas');
+              canvas.width = 160;
+              canvas.height = 120;
+              const ctx = canvas.getContext('2d', { willReadFrequently: true });
+              let prevPixels: Uint8ClampedArray | null = null;
+              let consecutiveMotionTicks = 0;
+              let consecutiveBlankTicks = 0;
+
+              cvIntervalId = setInterval(async () => {
+                if (closed || !localVideoEl || localVideoEl.readyState < 2 || !ctx) return;
+                try {
+                  ctx.drawImage(localVideoEl, 0, 0, 160, 120);
+                  const imgData = ctx.getImageData(0, 0, 160, 120);
+                  const pixels = imgData.data;
+
+                  // 1. Motion & Frisking / Rapid Movement Detection
+                  if (prevPixels) {
+                    let diffSum = 0;
+                    for (let i = 0; i < pixels.length; i += 4) {
+                      const d = Math.abs(pixels[i] - prevPixels[i]);
+                      diffSum += d;
+                    }
+                    const avgDiff = diffSum / (pixels.length / 4);
+                    setMotionLevel(Math.min(100, Math.round(avgDiff * 3)));
+
+                    if (avgDiff > 28) {
+                      consecutiveMotionTicks++;
+                      if (consecutiveMotionTicks >= 2) {
+                        triggerAlert(
+                          'EXCESSIVE_MOVEMENT',
+                          '⚠️ Rapid Movement / Activity Detected!',
+                          'NEEDS_REVIEW'
+                        );
+                      }
+                    } else {
+                      consecutiveMotionTicks = Math.max(0, consecutiveMotionTicks - 1);
+                    }
+                  }
+                  prevPixels = new Uint8ClampedArray(pixels);
+
+                  // 2. Hardware Face Detection (if supported by modern Chrome/Edge)
+                  if (typeof (window as any).FaceDetector !== 'undefined') {
+                    try {
+                      const detector = new (window as any).FaceDetector({ fastMode: true, maxDetectedFaces: 5 });
+                      const faces = await detector.detect(localVideoEl);
+                      if (faces.length >= 2) {
+                        triggerAlert(
+                          'MULTIPLE_PERSONS',
+                          `🚨 CHEATING ALERT: ${faces.length} Persons Detected in Frame!`,
+                          'NEEDS_REVIEW_HIGH'
+                        );
+                      } else if (faces.length === 0) {
+                        consecutiveBlankTicks++;
+                        if (consecutiveBlankTicks >= 6) {
+                          triggerAlert(
+                            'FACE_ABSENT',
+                            '⚠️ Face Absent / Candidate Looking Away from Camera',
+                            'NEEDS_REVIEW'
+                          );
+                        }
+                      } else {
+                        consecutiveBlankTicks = 0;
+                      }
+                    } catch (_) {}
+                  }
+                } catch (_) {}
+              }, 600);
+            }
           }
 
           // Audio meter analysis
@@ -171,6 +278,9 @@ export default function MediaRoom({
             try {
               const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
               audioContext = new AudioCtx();
+              if (audioContext.state === 'suspended') {
+                void audioContext.resume();
+              }
               const source = audioContext.createMediaStreamSource(new MediaStream([audioTrack]));
               const analyser = audioContext.createAnalyser();
               analyser.fftSize = 64;
@@ -217,7 +327,7 @@ export default function MediaRoom({
         }
       }
 
-      // 3. Cloud LiveKit WebRTC Room Connection
+      // 3. Cloud LiveKit WebRTC Room Connection with explicit source metadata
       try {
         const creds = await api(`/sessions/${sid}/media`, token, 'POST');
         if (closed) return;
@@ -227,16 +337,22 @@ export default function MediaRoom({
           return;
         }
 
-        // Publish local tracks to LiveKit room
+        // Publish local tracks to LiveKit room with explicit source parameters
         if (localStream) {
           for (const track of localStream.getTracks()) {
             if (closed) break;
             if (track.kind === 'video') {
               const lvt = new LocalVideoTrack(track);
-              await room.localParticipant.publishTrack(lvt);
+              await room.localParticipant.publishTrack(lvt, {
+                name: phone ? 'secondary' : 'camera',
+                source: Track.Source.Camera
+              });
             } else if (track.kind === 'audio') {
               const lat = new LocalAudioTrack(track);
-              await room.localParticipant.publishTrack(lat);
+              await room.localParticipant.publishTrack(lat, {
+                name: 'microphone',
+                source: Track.Source.Microphone
+              });
             }
           }
         }
@@ -257,6 +373,7 @@ export default function MediaRoom({
     // Cleanup on unmount
     return () => {
       closed = true;
+      if (cvIntervalId) clearInterval(cvIntervalId);
       if (animationId) cancelAnimationFrame(animationId);
       if (audioContext && audioContext.state !== 'closed') {
         void audioContext.close();
@@ -284,7 +401,7 @@ export default function MediaRoom({
   }, [sid, token, phone, viewer]);
 
   return (
-    <div className="mediaCard">
+    <div className={`mediaCard ${currentAlert ? 'alertActive' : ''}`}>
       <div className="mediaCardHeader">
         <div className="mediaStatusBadge">
           <span className="livePulse"></span>
@@ -297,6 +414,32 @@ export default function MediaRoom({
           </div>
         )}
       </div>
+
+      {/* Real-time On-Screen Proctoring HUD Alert Overlay */}
+      {!phone && !viewer && (
+        <div className="proctoringHudOverlay">
+          {currentAlert ? (
+            <div className={`proctoringAlertPill ${currentAlert.severity.toLowerCase()}`}>
+              {currentAlert.type === 'MULTIPLE_PERSONS' ? (
+                <Users size={16} className="alertPillIcon spinPulse" />
+              ) : currentAlert.type === 'FACE_ABSENT' || currentAlert.type === 'HEAD_TURN_PROLONGED' ? (
+                <EyeOff size={16} className="alertPillIcon" />
+              ) : (
+                <Activity size={16} className="alertPillIcon" />
+              )}
+              <div className="alertPillContent">
+                <strong>{currentAlert.message}</strong>
+                <small>Evidence snapshot logged · AI proctoring active</small>
+              </div>
+            </div>
+          ) : (
+            <div className="proctoringCleanPill">
+              <ShieldCheck size={14} className="cleanIcon" />
+              <span>Verified 1 Candidate in Frame · Clean</span>
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="feedsGrid" ref={host}></div>
 

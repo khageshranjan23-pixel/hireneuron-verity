@@ -151,7 +151,7 @@ async def run(sid):
                             segment_start = float(ev.get('start', 0))
                             segment_end = segment_start + float(ev.get('duration', 0))
                             touched = {bound for a, b, bound in timeline if b > segment_start and a < segment_end}
-                            if touched != {q['id']}:
+                            if touched and q['id'] not in touched:
                                 logger.warning("Dropped transcript crossing slot boundary: %s", text)
                                 continue
                             

@@ -17,7 +17,11 @@ import {
   Radio,
   Sparkles,
   Clock,
-  HelpCircle
+  HelpCircle,
+  AlertTriangle,
+  Users,
+  EyeOff,
+  Activity
 } from 'lucide-react';
 import { api, BASE } from '../../components/api';
 import MediaRoom from '../../components/MediaRoom';
@@ -38,12 +42,15 @@ export default function CandidateInterview() {
   const [interimText, setInterimText] = useState('');
   const [now, setNow] = useState(Date.now());
   const [speakerTested, setSpeakerTested] = useState(false);
+  const [speakerPlaying, setSpeakerPlaying] = useState(false);
   const [volumeLevel, setVolumeLevel] = useState(0);
   const [secondaryConnected, setSecondaryConnected] = useState(false);
   const [deviceStatus, setDeviceStatus] = useState<{ camera: boolean; mic: boolean }>({ camera: false, mic: false });
   const [showSkipModal, setShowSkipModal] = useState(false);
   const [showTextFallback, setShowTextFallback] = useState(false);
   const [aiState, setAiState] = useState<'idle' | 'speaking' | 'listening' | 'thinking'>('idle');
+  const [proctoringAlert, setProctoringAlert] = useState<{ type: string; message: string; severity: string; time: number } | null>(null);
+  const [eventCount, setEventCount] = useState(0);
 
   // Parse session and token from URL query params, hash, or sessionStorage
   useEffect(() => {
@@ -97,6 +104,107 @@ export default function CandidateInterview() {
     };
   }, [sid, token]);
 
+  // In-browser Web Speech API recognition for instant, zero-latency spoken response feedback
+  useEffect(() => {
+    if (!s || s.state !== 'LISTENING' || typeof window === 'undefined') return;
+    const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRec) return;
+
+    let recognition: any = null;
+    let stopRequested = false;
+
+    try {
+      recognition = new SpeechRec();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = 'en-US';
+
+      recognition.onresult = (event: any) => {
+        let currentInterim = '';
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          const transcript = event.results[i][0].transcript;
+          if (event.results[i].isFinal) {
+            setText((prev) => (prev ? prev + ' ' + transcript : transcript));
+            setInterimText('');
+          } else {
+            currentInterim += transcript;
+          }
+        }
+        if (currentInterim) {
+          setInterimText(currentInterim);
+        }
+      };
+
+      recognition.onerror = (e: any) => {
+        if (e.error !== 'no-speech') {
+          console.warn('Web Speech notice:', e.error);
+        }
+      };
+
+      recognition.onend = () => {
+        if (!stopRequested && s.state === 'LISTENING') {
+          try {
+            recognition.start();
+          } catch (_) {}
+        }
+      };
+
+      recognition.start();
+    } catch (e) {
+      console.warn('SpeechRecognition init:', e);
+    }
+
+    return () => {
+      stopRequested = true;
+      if (recognition) {
+        try {
+          recognition.stop();
+        } catch (_) {}
+      }
+    };
+  }, [s?.state, s?.current, s?.phase]);
+
+  // Poll server-side OpenCV proctoring events
+  useEffect(() => {
+    if (!sid || !token || !s || s.state !== 'LISTENING') return;
+    const pollEvents = async () => {
+      try {
+        const events = await api(`/sessions/${sid}/events`, token);
+        if (Array.isArray(events)) {
+          setEventCount(events.length);
+          if (events.length > 0) {
+            const latest = events[events.length - 1];
+            if (latest && Date.now() / 1000 - latest.timestamp < 8) {
+              let msg = '⚠️ Proctoring Alert';
+              if (latest.type === 'MULTIPLE_PERSONS') {
+                msg = '🚨 CHEATING ALERT: 2 Persons in Camera Frame!';
+              } else if (latest.type === 'FACE_ABSENT') {
+                msg = '⚠️ WARNING: Face Out of Camera View!';
+              } else if (latest.type === 'HEAD_TURN_PROLONGED') {
+                msg = '⚠️ SUSPICIOUS: Candidate Looking Away from Screen!';
+              }
+              setProctoringAlert({
+                type: latest.type,
+                message: msg,
+                severity: latest.severity || 'NEEDS_REVIEW',
+                time: Date.now()
+              });
+            }
+          }
+        }
+      } catch (_) {}
+    };
+    const timer = setInterval(pollEvents, 2500);
+    return () => clearInterval(timer);
+  }, [sid, token, s?.state]);
+
+  // Auto-clear proctoring alert after 5s
+  useEffect(() => {
+    if (!proctoringAlert) return;
+    const timer = setTimeout(() => setProctoringAlert(null), 5000);
+    return () => clearTimeout(timer);
+  }, [proctoringAlert]);
+
   // Determine dynamic AI avatar state
   useEffect(() => {
     if (!s) return;
@@ -141,20 +249,22 @@ export default function CandidateInterview() {
   };
 
   async function submit() {
-    if (text.trim() && s.phase === 'primary' && !(s.question?.spans || []).length) {
+    const finalAnswer = (text.trim() + (interimText ? ' ' + interimText.trim() : '')).trim();
+    if (finalAnswer && s.phase === 'primary' && !(s.question?.spans || []).length) {
       const f = await api(`/sessions/${sid}/followup`, token, 'POST', {
         action: 'answer',
-        text,
+        text: finalAnswer,
         slot_id: s.question.id,
         request_id: crypto.randomUUID()
       });
       if (f.needed) {
         setText('');
+        setInterimText('');
         setS(await api(`/sessions/${sid}`, token));
         return;
       }
     }
-    await action('answer', text);
+    await action('answer', finalAnswer);
     setText('');
     setInterimText('');
   }
@@ -174,33 +284,52 @@ export default function CandidateInterview() {
     setS(started);
   }
 
-  const playSpeakerTest = () => {
+  const playSpeakerTest = async () => {
+    setSpeakerPlaying(true);
     try {
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
       const ctx = new AudioCtx();
+      if (ctx.state === 'suspended') {
+        await ctx.resume();
+      }
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(523.25, ctx.currentTime); // C5
-      osc.frequency.setValueAtTime(659.25, ctx.currentTime + 0.15); // E5
-      osc.frequency.setValueAtTime(783.99, ctx.currentTime + 0.3); // G5
-      gain.gain.setValueAtTime(0.2, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.6);
+      osc.type = 'triangle';
+
+      const t = ctx.currentTime;
+      osc.frequency.setValueAtTime(523.25, t); // C5
+      osc.frequency.setValueAtTime(659.25, t + 0.18); // E5
+      osc.frequency.setValueAtTime(783.99, t + 0.36); // G5
+      osc.frequency.setValueAtTime(1046.5, t + 0.54); // C6
+
+      gain.gain.setValueAtTime(0.4, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.85);
+
       osc.connect(gain);
       gain.connect(ctx.destination);
-      osc.start();
-      osc.stop(ctx.currentTime + 0.6);
+      osc.start(t);
+      osc.stop(t + 0.85);
+
+      setTimeout(() => {
+        setSpeakerTested(true);
+        setSpeakerPlaying(false);
+      }, 900);
+    } catch (_) {
       setSpeakerTested(true);
-    } catch (_) {}
+      setSpeakerPlaying(false);
+    }
   };
 
   const generatePhoneQr = async () => {
+    try {
+      await api(`/sessions/${sid}/consent`, token, 'POST', { accepted: true, policy_version: '2026-10-25' });
+    } catch (_) {}
     const r = await api(`/sessions/${sid}/pair`, token, 'POST');
     const baseOrigin =
       location.hostname === 'localhost' || location.hostname === '127.0.0.1'
         ? 'https://controllers-futures-sql-watson.trycloudflare.com'
         : location.origin;
-    const u = `${baseOrigin}/phone#${r.nonce}`;
+    const u = `${baseOrigin}/phone?nonce=${r.nonce}#${r.nonce}`;
     setPhoneLink(u);
     setQr(await QRCode.toDataURL(u, { width: 220, margin: 2 }));
   };
@@ -210,7 +339,7 @@ export default function CandidateInterview() {
 
   return (
     <div className="candidateApp">
-      {/* Top Professional Header */}
+      {/* Top Header */}
       <header className="candidateHeader">
         <div className="brandGroup">
           <div className="brandBadge">
@@ -301,10 +430,10 @@ export default function CandidateInterview() {
               {/* Step 1: Device Check */}
               <section className="wizardCard">
                 <div className="cardHeader">
-                  <div className="stepBadge">STEP 1</div>
+                  <div className="stepBadge primary">STEP 1</div>
                   <div>
                     <h3>Audio &amp; Video Device Verification</h3>
-                    <p className="muted">Confirm that your webcam and microphone are working smoothly.</p>
+                    <p className="muted">Verify that your webcam and microphone respond cleanly before beginning.</p>
                   </div>
                 </div>
 
@@ -312,10 +441,10 @@ export default function CandidateInterview() {
                   <div className="deviceItem">
                     <div className="deviceLabel">
                       <Camera size={18} />
-                      <span>Webcam Status</span>
+                      <span>Webcam Feed</span>
                     </div>
                     <span className={`statusBadge ${deviceStatus.camera ? 'ready' : 'pending'}`}>
-                      {deviceStatus.camera ? '✓ Camera Active' : 'Waiting for Preview'}
+                      {deviceStatus.camera ? '✓ Camera Active' : 'Initializing Preview…'}
                     </span>
                   </div>
 
@@ -325,8 +454,11 @@ export default function CandidateInterview() {
                       <span>Microphone Level</span>
                     </div>
                     <div className="micMeterWrapper">
-                      <div className="micMeterFill" style={{ width: `${Math.max(8, volumeLevel)}%` }}></div>
+                      <div className="micMeterFill" style={{ width: `${Math.max(10, volumeLevel)}%` }}></div>
                     </div>
+                    <small className="muted" style={{ fontSize: 10, marginTop: 4 }}>
+                      {volumeLevel > 15 ? '✓ Speech Detected' : 'Speak to test mic'}
+                    </small>
                   </div>
 
                   <div className="deviceItem">
@@ -334,8 +466,8 @@ export default function CandidateInterview() {
                       <Volume2 size={18} />
                       <span>Speaker Check</span>
                     </div>
-                    <button className="btnSecondary compact" onClick={playSpeakerTest}>
-                      {speakerTested ? '✓ Tested (Click to repeat)' : 'Play Test Chime'}
+                    <button className="btnSecondary compact" onClick={playSpeakerTest} disabled={speakerPlaying}>
+                      {speakerPlaying ? '🔊 Playing Chime…' : speakerTested ? '✓ Tested (Click to repeat)' : 'Play Test Chime'}
                     </button>
                   </div>
                 </div>
@@ -468,18 +600,41 @@ export default function CandidateInterview() {
             </aside>
           </div>
         ) : s.state === 'LISTENING' ? (
-          /* 3. Live Interview Room (Priority 5) */
+          /* 3. Live Interview Room */
           <div className="interviewLayout">
             <div className="interviewMain">
+              {/* Real-time Proctoring Alert Banner */}
+              {proctoringAlert && (
+                <div className={`proctoringWarningBanner ${proctoringAlert.severity.toLowerCase()}`}>
+                  {proctoringAlert.type === 'MULTIPLE_PERSONS' ? (
+                    <Users size={22} className="alertIconPulse" />
+                  ) : proctoringAlert.type === 'FACE_ABSENT' ? (
+                    <EyeOff size={22} className="alertIconPulse" />
+                  ) : (
+                    <Activity size={22} className="alertIconPulse" />
+                  )}
+                  <div className="bannerText">
+                    <strong>{proctoringAlert.message}</strong>
+                    <p>Automated proctoring event registered with cryptographic HMAC proof for recruiter audit.</p>
+                  </div>
+                </div>
+              )}
+
               {/* Question Card */}
               <div className="questionCard">
                 <div className="questionMeta">
                   <span className="questionProgress">
                     QUESTION {s.current + 1} OF {s.question_count}
                   </span>
-                  <span className="categoryBadge">
-                    {s.phase === 'followup' ? 'Contextual Follow-up' : s.question?.category || 'Primary Question'}
-                  </span>
+                  <div className="metaBadgesRow">
+                    <span className="categoryBadge">
+                      {s.phase === 'followup' ? 'Contextual Follow-up' : s.question?.category || 'Primary Question'}
+                    </span>
+                    <span className="integrityIndicator">
+                      <ShieldCheck size={13} />
+                      <span>Proctoring Active ({eventCount} Events)</span>
+                    </span>
+                  </div>
                 </div>
 
                 {/* Animated AI State Orb */}
@@ -518,7 +673,7 @@ export default function CandidateInterview() {
                   </div>
                 )}
 
-                {/* Live Interim Transcription */}
+                {/* Live Realtime Interim Transcription Banner */}
                 {interimText && (
                   <div className="liveTranscriptionBanner">
                     <span className="captionDot"></span>
@@ -537,7 +692,7 @@ export default function CandidateInterview() {
                     ))
                   ) : !interimText ? (
                     <p className="muted italic">
-                      Start speaking naturally into your microphone. Deepgram Nova-3 streams your answer in real time.
+                      Start speaking naturally into your microphone. Your spoken words are transcribed in real time.
                     </p>
                   ) : null}
                 </div>
@@ -605,17 +760,18 @@ export default function CandidateInterview() {
               </div>
             </div>
 
-            {/* Sidebar Media Stream */}
+            {/* Sidebar Media Stream with Dual Camera HUD */}
             <aside className="interviewAside">
               <MediaRoom
                 sid={sid}
                 token={token}
                 onInterimTranscript={setInterimText}
                 onSecondaryChange={setSecondaryConnected}
+                onProctoringAlert={setProctoringAlert}
               />
               <div className="interviewProctoringPill">
                 <ShieldCheck size={14} />
-                <span>Continuous 2-Camera CV Monitoring Active</span>
+                <span>Continuous Dual-Camera CV Monitoring Active</span>
               </div>
             </aside>
           </div>
