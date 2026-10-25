@@ -20,6 +20,16 @@ class Config(BaseModel):
  custom_questions:list[str]=Field(default_factory=list,max_length=30)
  categories:list[Literal['technical','scenario','experience','behavioral']]=Field(default=['technical','scenario','experience','behavioral'],min_length=1)
  followups:bool=True
+ candidate_profile:dict|None=None
+ skill_alignment:dict|None=None
+class AnalyzeProfileRequest(BaseModel):
+ resume_text:str=Field(default='',max_length=35000)
+ job_description:str=Field(default='',max_length=20000)
+ skills:list[str]=Field(default_factory=list)
+class QuestionUpdate(BaseModel):
+ text:str=Field(min_length=5,max_length=2000)
+ category:Literal['technical','scenario','experience','behavioral','recruiter']|None=None
+ skill:str|None=None
 class Consent(BaseModel):
  accepted:bool
  policy_version:Literal['2026-10-25']='2026-10-25'
@@ -116,6 +126,19 @@ async def generate_questions(sid:str,a=Depends(auth)):
   if store.get(c,sid)['revision']!=rev:raise HTTPException(409,'State changed; retry')
   store.put(c,s)
  return s
+@app.patch('/sessions/{sid}/questions/{qid}')
+def update_question(sid:str,qid:str,body:QuestionUpdate,a=Depends(auth)):
+ allow(a,sid,['recruiter'])
+ with store.tx() as c:
+  s=store.get(c,sid)
+  if s['state']!='BLUEPRINT_FROZEN':raise HTTPException(409,'Cannot modify blueprint after interview started')
+  q=next((x for x in s['questions'] if x['id']==qid),None)
+  if not q:raise HTTPException(404,'Question not found')
+  q['text']=body.text.strip();q['locked']=True
+  if body.category:q['category']=body.category
+  if body.skill:q['skill']=body.skill.strip()
+  store.put(c,s)
+ return {'question':q}
 @app.post('/documents/extract')
 async def extract(file:UploadFile=File(...),a=Depends(auth)):
  allow(a,None,['recruiter']);data=await file.read(5*1024*1024+1)
@@ -136,6 +159,10 @@ async def extract(file:UploadFile=File(...),a=Depends(auth)):
   else:raise ValueError('Use PDF or DOCX')
  except Exception as e:raise HTTPException(422,'Unreadable file, encrypted document, or unsupported content') from e
  return {'text':text[:30000],'needs_ocr':len(text.strip())<40,'note':'Text extraction only. Review and correct before generating questions.'}
+@app.post('/documents/analyze-profile')
+async def analyze_profile_endpoint(b:AnalyzeProfileRequest,a=Depends(auth)):
+ allow(a,None,['recruiter'])
+ return await providers.analyze_profile(b.resume_text,b.job_description,b.skills)
 @app.post('/sessions/{sid}/consent')
 def consent(sid:str,body:Consent,a=Depends(auth)):
  allow(a,sid,['candidate'])
@@ -259,8 +286,59 @@ def delete(sid:str,a=Depends(auth)):
   s=store.get(c,sid)
   if s['state']=='LISTENING':raise HTTPException(409,'Finish active session before deletion')
   for e in s['events']:(Path(os.getenv('EVIDENCE_PATH','data/evidence'))/(e['id']+'.enc')).unlink(missing_ok=True)
+  rec_dir=Path(os.getenv('RECORDINGS_PATH','data/recordings'))
+  for ext in ('.webm','.mp4'):(rec_dir/(sid+ext)).unlink(missing_ok=True)
   for table in ('credentials','pairing','jobs'):c.execute(f'DELETE FROM {table} WHERE sid=?',(sid,))
   c.execute('DELETE FROM sessions WHERE id=?',(sid,))
+ return {'deleted':True}
+
+@app.post('/sessions/{sid}/recording/upload')
+async def upload_recording(sid:str,file:UploadFile=File(...),a=Depends(auth)):
+ allow(a,sid,['candidate','recruiter','worker'])
+ from pathlib import Path
+ with store.tx() as c:
+  s=store.get(c,sid)
+  if not any(x['role'] in ('candidate_recording','candidate') for x in s['consents']):
+   raise HTTPException(403,'Recording consent required')
+  data=await file.read(150*1024*1024+1)
+  if len(data)>150*1024*1024:raise HTTPException(413,'Maximum recording size 150MB')
+  import hashlib
+  sha=hashlib.sha256(data).hexdigest()
+  rec_dir=Path(os.getenv('RECORDINGS_PATH','data/recordings'))
+  rec_dir.mkdir(parents=True,exist_ok=True)
+  ext='.webm' if (file.filename or '').endswith('.webm') else '.mp4'
+  rec_path=rec_dir/(sid+ext)
+  rec_path.write_bytes(data)
+  s['recording']={'id':core.uid(),'filename':sid+ext,'sha256':sha,'size':len(data),'created_at':time.time(),'status':'finalized'}
+  store.put(c,s)
+ return {'status':'uploaded','sha256':sha,'size':len(data)}
+
+@app.get('/sessions/{sid}/recording')
+def get_recording(sid:str,a=Depends(auth)):
+ allow(a,sid,['recruiter'])
+ from pathlib import Path
+ with store.connect() as c:s=store.get(c,sid)
+ rec=s.get('recording')
+ if not rec:raise HTTPException(404,'No recording available')
+ rec_dir=Path(os.getenv('RECORDINGS_PATH','data/recordings'))
+ p=rec_dir/rec['filename']
+ if not p.exists():raise HTTPException(404,'Recording file not found')
+ media_type='video/webm' if p.suffix=='.webm' else 'video/mp4'
+ from fastapi.responses import FileResponse
+ return FileResponse(p,media_type=media_type)
+
+@app.delete('/sessions/{sid}/recording')
+def delete_recording(sid:str,a=Depends(auth)):
+ allow(a,sid,['recruiter'])
+ from pathlib import Path
+ with store.tx() as c:
+  s=store.get(c,sid)
+  rec=s.get('recording')
+  if rec:
+   rec_dir=Path(os.getenv('RECORDINGS_PATH','data/recordings'))
+   (rec_dir/rec['filename']).unlink(missing_ok=True)
+   s['recording']=None
+   store.put(c,s)
  return {'deleted':True}
 
 class Coverage(BaseModel):

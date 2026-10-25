@@ -44,7 +44,8 @@ def blueprint(config):
 def new_session(config):
  return dict(id=uid(),config=config,questions=blueprint(config),rubric=RUBRIC,state='BLUEPRINT_FROZEN',
   current=0,created_at=time.time(),started_at=None,question_started_at=None,consents=[],events=[],audit=[],
-  revision=0,processed={},pending_skip=False,phase='primary',generation='local templates; not AI',coverage={})
+  revision=0,processed={},pending_skip=False,phase='primary',generation='local templates; not AI',coverage={},
+  profile=config.get('candidate_profile'),alignment=config.get('skill_alignment'))
 
 def active(s): return s['questions'][s['current']] if s['current']<len(s['questions']) else None
 
@@ -95,12 +96,13 @@ def command(s,action,text,now,slot_id=None):
 
 class TemporalDetector:
  """Thresholds are engineering defaults, NOT validated accuracy/confidence."""
- def __init__(self,absence=5,multiple=3,cooldown=20):
-  self.absence=absence;self.multiple=multiple;self.cooldown=cooldown;self.since={};self.last={}
- def update(self,role,faces,persons,now):
+ def __init__(self,absence=5,multiple=3,cooldown=20,head_turn=4):
+  self.absence=absence;self.multiple=multiple;self.cooldown=cooldown;self.head_turn=head_turn;self.since={};self.last={}
+ def update(self,role,faces,persons,now,profile_faces=0):
   out=[]
   for kind,condition,threshold,severity in [
-   ('FACE_ABSENT',role=='primary' and faces==0,self.absence,'NEEDS_REVIEW'),
+   ('FACE_ABSENT',role=='primary' and faces==0 and profile_faces==0,self.absence,'NEEDS_REVIEW'),
+   ('HEAD_TURN_PROLONGED',role=='primary' and faces==0 and profile_faces>0,self.head_turn,'OBSERVED_EVENT'),
    ('MULTIPLE_PERSONS',persons>=2,self.multiple,'NEEDS_REVIEW_HIGH')]:
    key=(role,kind)
    if not condition: self.since.pop(key,None);continue

@@ -1,5 +1,5 @@
 """Independent trusted media subscriber. Real frames only; no client event authority.
-OpenCV HOG + Haar are a conservative baseline, not validated production detectors.
+Calibrated CV detector with frontal face, profile face (head turn), and upper-body person detection.
 Run one process per interview: python -m workers.integrity SESSION_ID
 """
 import asyncio,time,sys,io,base64,logging
@@ -9,29 +9,42 @@ from livekit import rtc
 from backend.app.core import TemporalDetector
 from .common import client,connect,state
 
-class BaselineCV:
+class CalibratedCV:
  def __init__(self):
   import cv2
-  self.cv=cv2;self.face=cv2.CascadeClassifier(cv2.data.haarcascades+'haarcascade_frontalface_default.xml')
-  self.hog=cv2.HOGDescriptor();self.hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
+  self.cv=cv2
+  self.face=cv2.CascadeClassifier(cv2.data.haarcascades+'haarcascade_frontalface_default.xml')
+  self.profile=cv2.CascadeClassifier(cv2.data.haarcascades+'haarcascade_profileface.xml')
+  self.upper=cv2.CascadeClassifier(cv2.data.haarcascades+'haarcascade_upperbody.xml')
+  self.hog=cv2.HOGDescriptor()
+  self.hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
  def infer(self,image):
   import numpy as np
   cv=self.cv;arr=np.array(image);gray=cv.cvtColor(arr,cv.COLOR_RGB2GRAY)
   faces=self.face.detectMultiScale(gray,scaleFactor=1.1,minNeighbors=5,minSize=(30,30))
+  profiles=self.profile.detectMultiScale(gray,scaleFactor=1.1,minNeighbors=5,minSize=(30,30))
+  uppers=self.upper.detectMultiScale(gray,scaleFactor=1.1,minNeighbors=4,minSize=(40,40))
   boxes,_=self.hog.detectMultiScale(arr,winStride=(8,8),padding=(8,8),scale=1.05)
-  return len(faces),max(len(boxes),len(faces))
+  total_people=max(len(boxes),len(uppers),len(faces)+len(profiles))
+  return len(faces),total_people,len(profiles)
 
 async def run(sid):
  async with client() as c:
-  room=await connect(sid,'integrity');detector=TemporalDetector();cv=BaselineCV()
+  room=await connect(sid,'integrity');detector=TemporalDetector();cv=CalibratedCV()
   tasks={};last={};gapped=set();rings={'primary':deque(maxlen=3),'secondary':deque(maxlen=3)}
   async def emit(role,kind,severity,frames,start,end):
    # Contact sheet retains multiple actual sampled frames and receive times.
    sheet=Image.new('RGB',(320*len(frames),260),'#101828');draw=ImageDraw.Draw(sheet)
    for i,(stamp,img) in enumerate(frames):
-    thumb=img.copy();thumb.thumbnail((320,240));sheet.paste(thumb,(i*320,20));draw.text((i*320+4,4),f'{stamp:.3f} UTC epoch',fill='white')
+    thumb=img.copy();thumb.thumbnail((320,240));sheet.paste(thumb,(i*320,20))
+    draw.text((i*320+4,4),f'{role.upper()} · {stamp:.2f} UTC',fill='white')
    b=io.BytesIO();sheet.save(b,format='JPEG',quality=85)
-   r=await c.post(f'/sessions/{sid}/events',json=dict(role=role,type=kind,severity=severity,jpeg_b64=base64.b64encode(b.getvalue()).decode(),algorithm='opencv-haar-hog-baseline-v1',frame_count=len(frames),start=start,end=end));r.raise_for_status()
+   r=await c.post(f'/sessions/{sid}/events',json=dict(
+    role=role,type=kind,severity=severity,
+    jpeg_b64=base64.b64encode(b.getvalue()).decode(),
+    algorithm='calibrated-cv-cascade-hog-v2',
+    frame_count=len(frames),start=start,end=end))
+   r.raise_for_status()
   async def read(track,role):
    stream=rtc.VideoStream(track,format=rtc.VideoBufferType.RGB24);sample=0
    try:
@@ -43,8 +56,8 @@ async def run(sid):
      rings[role].append((now,img))
      if role in gapped:
       await emit(role,'COVERAGE_RESTORED','OBSERVED_EVENT',list(rings[role]),now,now);gapped.remove(role)
-     faces,people=await asyncio.to_thread(cv.infer,img)
-     for event in detector.update(role,faces,people,now):
+     faces,people,profiles=await asyncio.to_thread(cv.infer,img)
+     for event in detector.update(role,faces,people,now,profiles):
       await emit(role,event['type'],event['severity'],list(rings[role]),event['start'],now)
    finally:await stream.aclose()
   def subscribe(track,publication,participant):
@@ -66,7 +79,7 @@ async def run(sid):
      if time.time()-stamp>8 and role not in gapped and rings[role]:
       await emit(role,'FRAME_COVERAGE_GAP','UNVERIFIED',list(rings[role]),stamp,time.time());gapped.add(role)
     # Heartbeat is separate from evidence, including a never-received feed.
-    await c.post(f'/sessions/{sid}/coverage',json={'worker':'integrity','frames':last,'algorithm':'opencv-haar-hog-baseline-v1'})
+    await c.post(f'/sessions/{sid}/coverage',json={'worker':'integrity','frames':last,'algorithm':'calibrated-cv-cascade-hog-v2'})
     await asyncio.sleep(2)
   finally:
    for t in tasks.values():t.cancel()

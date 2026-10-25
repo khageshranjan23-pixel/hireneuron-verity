@@ -98,3 +98,41 @@ def test_expired_pair(client):
  n=client.post(f'/sessions/{sid}/pair',headers=h).json()['nonce']
  with store.tx() as c:c.execute('UPDATE pairing SET expires=0')
  assert client.post('/pair/redeem',json={'nonce':n,'accepted':True}).status_code==410
+
+def test_question_update_before_start(client):
+ sid,h=create(client)
+ s=client.get('/sessions/'+sid,headers=headers()).json()
+ qid=s['questions'][0]['id']
+ r=client.patch(f'/sessions/{sid}/questions/{qid}',headers=headers(),json={'text':'Custom recruiter wording for question 1?','category':'technical','skill':'Python'})
+ assert r.status_code==200
+ updated=r.json()['question']
+ assert updated['text']=='Custom recruiter wording for question 1?'
+ assert updated['locked'] is True
+ begin(client,sid,h)
+ r_after=client.patch(f'/sessions/{sid}/questions/{qid}',headers=headers(),json={'text':'Trying to change active'})
+ assert r_after.status_code==409
+
+def test_analyze_profile_deterministic(client):
+ res=client.post('/documents/analyze-profile',headers=headers(),json={
+  'resume_text':'Candidate Alice alice@example.com experienced with Python, Docker and SQL.',
+  'job_description':'Need Python, FastAPI, and Kubernetes.',
+  'skills':['Python','FastAPI','Kubernetes']
+ })
+ assert res.status_code==200
+ data=res.json()
+ assert 'profile' in data and 'alignment' in data
+ assert 'Python' in data['alignment']['matched_skills']
+ assert 'Kubernetes' in data['alignment']['missing_skills']
+
+def test_recording_upload_and_stream(client):
+ sid,h=create(client);begin(client,sid,h)
+ assert client.get(f'/sessions/{sid}/recording',headers=headers()).status_code==404
+ fake_video=b'REAL_INTERVIEW_MEDIA_BYTES_TEST_STREAM'
+ r=client.post(f'/sessions/{sid}/recording/upload',headers=h,files={'file':('session.webm',fake_video,'video/webm')})
+ assert r.status_code==200
+ assert r.json()['status']=='uploaded'
+ rec=client.get(f'/sessions/{sid}/recording',headers=headers())
+ assert rec.status_code==200
+ assert rec.content==fake_video
+ assert client.delete(f'/sessions/{sid}/recording',headers=headers()).status_code==200
+ assert client.get(f'/sessions/{sid}/recording',headers=headers()).status_code==404
