@@ -1,7 +1,12 @@
 .env
+.env.local
 .venv
-web
+web/node_modules
+web/.next
 reference
 data
 .git
 **/__pycache__
+*.pyc
+*.zip
+cloudflared.exe
