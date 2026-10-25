@@ -338,8 +338,10 @@ export default function Interview() {
                       onClick={() =>
                         void run(async () => {
                           const r = await api(`/sessions/${sid}/pair`, token, 'POST');
-                          const host = (location.hostname === 'localhost' || location.hostname === '127.0.0.1') ? `${location.hostname}:3000` : location.host;
-                          const u = `${location.protocol}//${host}/phone#${r.nonce}`;
+                          const baseOrigin = (location.hostname === 'localhost' || location.hostname === '127.0.0.1')
+                            ? 'https://controllers-futures-sql-watson.trycloudflare.com'
+                            : location.origin;
+                          const u = `${baseOrigin}/phone#${r.nonce}`;
                           setPhoneLink(u);
                           setQr(await QRCode.toDataURL(u, { width: 220, margin: 2 }));
                         })
