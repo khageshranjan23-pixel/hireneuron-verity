@@ -393,35 +393,19 @@ export default function MediaRoom({
           />
 
           <AIProctorEngine
-            videoElement={localVideoNode}
             mediaStream={localMediaStream}
-            onViolation={(type, msg, severity) => {
+            onViolation={(type, msg, severity, snapshotB64) => {
               triggerAlert(type, msg, severity);
-              // Take snapshot canvas frame and send to backend
-              try {
-                if (localVideoNode) {
-                  const canvas = document.createElement('canvas');
-                  canvas.width = 320;
-                  canvas.height = 240;
-                  const ctx = canvas.getContext('2d');
-                  if (ctx) {
-                    ctx.drawImage(localVideoNode, 0, 0, 320, 240);
-                    const b64 = canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
-                    if (b64) {
-                      void api(`/sessions/${sid}/events`, token, 'POST', {
-                        role: 'primary',
-                        type,
-                        severity,
-                        jpeg_b64: b64,
-                        algorithm: 'client-tfjs-facemesh-v1',
-                        frame_count: 1,
-                        start: Date.now() / 1000,
-                        end: Date.now() / 1000
-                      }).catch(() => {});
-                    }
-                  }
-                }
-              } catch (_) {}
+              void api(`/sessions/${sid}/events`, token, 'POST', {
+                role: 'primary',
+                type,
+                severity,
+                jpeg_b64: snapshotB64 || '',
+                algorithm: 'client-tfjs-facemesh-v1',
+                frame_count: 1,
+                start: Date.now() / 1000,
+                end: Date.now() / 1000
+              }).catch(() => {});
             }}
             onTelemetryUpdate={(metrics) => {
               setFaceStatus(metrics.faces === 0 ? 'absent' : metrics.faces > 1 ? 'multiple' : 'normal');
