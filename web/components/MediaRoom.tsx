@@ -224,6 +224,23 @@ export default function MediaRoom({
       if (p.identity.startsWith('phone:')) {
         setHasSecondary(true);
         onSecondaryChange?.(true);
+        // Explicitly subscribe to all published tracks from the phone participant
+        // in case autoSubscribe hasn't fired yet for this late-arriving participant
+        p.trackPublications.forEach((pub) => {
+          if (!pub.isSubscribed) {
+            try { pub.setSubscribed(true); } catch (_) {}
+          }
+        });
+      }
+    });
+    // Also subscribe when phone publishes a new track after participant is already known
+    room.on(RoomEvent.TrackPublished, (pub, p) => {
+      if (p.identity.startsWith('phone:')) {
+        setHasSecondary(true);
+        onSecondaryChange?.(true);
+        if (!pub.isSubscribed) {
+          try { pub.setSubscribed(true); } catch (_) {}
+        }
       }
     });
     room.on(RoomEvent.TrackUnsubscribed, (track, pub, p) => {
@@ -435,6 +452,9 @@ export default function MediaRoom({
           participant.trackPublications.forEach((pub) => {
             if (pub.isSubscribed && pub.track) {
               attachRemote(pub.track, participant.identity);
+            } else if (!pub.isSubscribed && participant.identity.startsWith('phone:')) {
+              // Force subscribe to phone tracks not yet subscribed
+              try { pub.setSubscribed(true); } catch (_) {}
             }
           });
         });
@@ -468,6 +488,27 @@ export default function MediaRoom({
         );
         if (!phone) {
           await room.startAudio().catch(() => {});
+        }
+
+        // Delayed re-scan: phone may have joined or published tracks during our
+        // local-media setup above. Run a catch-up scan 2 s after connect to
+        // subscribe to any phone tracks we may have missed.
+        if (!phone && !viewer) {
+          setTimeout(() => {
+            if (closed) return;
+            room.remoteParticipants.forEach((participant) => {
+              if (!participant.identity.startsWith('phone:')) return;
+              setHasSecondary(true);
+              onSecondaryChange?.(true);
+              participant.trackPublications.forEach((pub) => {
+                if (pub.isSubscribed && pub.track) {
+                  attachRemote(pub.track, participant.identity);
+                } else if (!pub.isSubscribed) {
+                  try { pub.setSubscribed(true); } catch (_) {}
+                }
+              });
+            });
+          }, 2000);
         }
       } catch (err) {
         setStatus(`Connected locally (${(err as Error).message})`);

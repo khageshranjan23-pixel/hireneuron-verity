@@ -62,6 +62,8 @@ export default function CandidateInterview() {
   const lastViolationTimeRef = useRef<{ [key: string]: number }>({});
 
   const handleFinalTranscript = useCallback((finalChunk: string) => {
+    // Suppress if we just switched to a new question
+    if (clearBlockRef.current) return;
     if (!finalChunk || !finalChunk.trim()) return;
     const chunk = finalChunk.trim();
     setText((prev) => {
@@ -161,22 +163,29 @@ export default function CandidateInterview() {
   }, [sid, token]);
 
   // ─── CLEAR ANSWER BOX ON EVERY NEW QUESTION ───────────────────────────────
-  // Runs whenever the question slot ID or phase changes — guarantees the answer
+  // Runs whenever the question slot index or phase changes — guarantees the
   // textarea is always fresh and never carries over from a previous question.
-  const prevQuestionKey = useRef<string>('');
+  const prevQuestionKey = useRef<string>('__init__');
+  // Block SpeechRecognition results briefly after a question change to prevent
+  // buffered audio from the previous question re-populating the new answer box.
+  const clearBlockRef = useRef(false);
+
   useEffect(() => {
     if (!s || s.state !== 'LISTENING') return;
-    const key = `${s.current}-${s.phase}-${s.question?.id}`;
+    // Use current slot index + phase as the unique key (question.id may be static)
+    const key = `${s.current ?? 0}-${s.phase ?? 'primary'}`;
     if (key !== prevQuestionKey.current) {
       prevQuestionKey.current = key;
+      // Block any STT result from landing for 800ms after question transition
+      clearBlockRef.current = true;
       setText('');
       setInterimText('');
       setAnswerCleared(true);
-      // Brief flash animation then reset flag
-      const t = setTimeout(() => setAnswerCleared(false), 600);
-      return () => clearTimeout(t);
+      const unblock = setTimeout(() => { clearBlockRef.current = false; }, 800);
+      const anim = setTimeout(() => setAnswerCleared(false), 600);
+      return () => { clearTimeout(unblock); clearTimeout(anim); };
     }
-  }, [s?.current, s?.phase, s?.question?.id, s?.state]);
+  }, [s?.current, s?.phase, s?.state]);
 
   // In-browser Web Speech API recognition — robust continuous capture with auto-restart
   const stopRequestedRef = useRef(false);
@@ -207,6 +216,9 @@ export default function CandidateInterview() {
         };
 
         rec.onresult = (event: any) => {
+          // If we just transitioned to a new question, suppress buffered results
+          // for 800ms to prevent previous-question audio from polluting the new box
+          if (clearBlockRef.current) return;
           let currentInterim = '';
           for (let i = event.resultIndex; i < event.results.length; ++i) {
             const transcript = event.results[i][0].transcript;
