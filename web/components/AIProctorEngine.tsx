@@ -66,9 +66,10 @@ export default function AIProctorEngine({
   }, [captureSnapshot, onViolation]);
 
   useEffect(() => {
+    if (!mediaStream || mediaStream.getVideoTracks().length === 0) return;
+
     let detector: faceLandmarks.FaceLandmarksDetector | null = null;
     let audioContext: AudioContext | null = null;
-    let ownStream: MediaStream | null = null;
     let running = true;
     let animationFrameId: number;
 
@@ -87,31 +88,16 @@ export default function AIProctorEngine({
           }
         );
 
-        // Acquire video stream: use provided mediaStream or acquire direct 720p stream
-        let stream = mediaStream;
-        if (!stream || stream.getVideoTracks().length === 0) {
-          try {
-            stream = await navigator.mediaDevices.getUserMedia({
-              video: { width: 1280, height: 720, facingMode: 'user' },
-              audio: true
-            });
-            ownStream = stream;
-          } catch {
-            stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-            ownStream = stream;
-          }
-        }
-
         const video = videoRef.current;
         if (!video) return;
-        video.srcObject = stream;
+        video.srcObject = mediaStream;
         try {
           await video.play();
         } catch (_) {}
 
         // Setup Audio Analyser for multi-voice and background noise detection
         try {
-          const audioTracks = stream.getAudioTracks();
+          const audioTracks = mediaStream.getAudioTracks();
           if (audioTracks.length > 0) {
             const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
             audioContext = new AudioCtx();
@@ -386,9 +372,6 @@ export default function AIProctorEngine({
       }
       if (audioContext) {
         audioContext.close().catch(() => {});
-      }
-      if (ownStream) {
-        ownStream.getTracks().forEach((t) => t.stop());
       }
     };
   }, [mediaStream, dispatchViolation, onTelemetryUpdate, warningType]);

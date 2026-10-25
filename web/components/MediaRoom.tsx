@@ -16,8 +16,10 @@ import {
   Volume2,
   VolumeX
 } from 'lucide-react';
+import dynamic from 'next/dynamic';
 import BrowserProctor from './BrowserProctor';
-import AIProctorEngine from './AIProctorEngine';
+
+const AIProctorEngine = dynamic(() => import('./AIProctorEngine'), { ssr: false });
 
 export default function MediaRoom({
   sid,

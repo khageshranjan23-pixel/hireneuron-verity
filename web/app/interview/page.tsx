@@ -327,7 +327,7 @@ export default function CandidateInterview() {
     const r = await api(`/sessions/${sid}/pair`, token, 'POST');
     const baseOrigin =
       location.hostname === 'localhost' || location.hostname === '127.0.0.1'
-        ? 'https://controllers-futures-sql-watson.trycloudflare.com'
+        ? 'https://adelaide-managing-everyone-peers.trycloudflare.com'
         : location.origin;
     const u = `${baseOrigin}/phone?nonce=${r.nonce}#${r.nonce}`;
     setPhoneLink(u);
