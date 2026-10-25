@@ -30,12 +30,19 @@ export default function MediaRoom({
 
     const attach = (track: any, identity: string) => {
       if (closed) return;
+      if (track.kind === 'audio') {
+        const audioEl = track.attach();
+        audioEl.style.display = 'none';
+        document.body.appendChild(audioEl);
+        nodes.set('audio-' + (track.sid || identity), audioEl);
+        return;
+      }
+      
       const el = track.attach();
       el.autoplay = true;
-      el.setAttribute('playsinline', '');
+      el.setAttribute('playsinline', 'true');
       
       const isPhone = identity.startsWith('phone:');
-      const isVoice = identity.startsWith('voice:');
       const isPrimary = identity.startsWith('candidate:');
       
       const wrapper = document.createElement('div');
@@ -46,8 +53,6 @@ export default function MediaRoom({
       badge.className = 'feedBadge';
       badge.innerText = isPhone
         ? 'Secondary Camera (Phone)'
-        : isVoice
-        ? 'AI Interviewer'
         : isPrimary
         ? 'Primary Camera (Laptop)'
         : identity;
@@ -113,24 +118,30 @@ export default function MediaRoom({
               localStream.addTrack(t.mediaStreamTrack);
             }
             if (t.kind === 'video') {
-              const el = t.attach();
-              el.muted = true;
-              el.autoplay = true;
-              el.setAttribute('playsinline', 'true');
-              el.setAttribute('webkit-playsinline', 'true');
-              if (t.mediaStreamTrack) {
-                (el as HTMLVideoElement).srcObject = new MediaStream([t.mediaStreamTrack]);
-              }
-              void el.play().catch((err) => console.warn('Webcam playback notice:', err));
+              const videoEl = document.createElement('video');
+              videoEl.muted = true;
+              videoEl.autoplay = true;
+              videoEl.setAttribute('playsinline', 'true');
+              videoEl.setAttribute('webkit-playsinline', 'true');
+              videoEl.style.width = '100%';
+              videoEl.style.height = '100%';
+              videoEl.style.objectFit = 'cover';
+              
+              t.attach(videoEl);
+              
+              videoEl.onloadedmetadata = () => {
+                videoEl.play().catch((err) => console.warn('Webcam playback error:', err));
+              };
+              void videoEl.play().catch(() => {});
               
               const wrapper = document.createElement('div');
               wrapper.className = 'feedWrapper localFeed';
-              wrapper.onclick = () => void el.play().catch(() => {});
+              wrapper.onclick = () => void videoEl.play().catch(() => {});
               const badge = document.createElement('div');
               badge.className = 'feedBadge';
               badge.innerText = phone ? 'Phone Rear Camera (Live)' : 'Your Primary Webcam';
               wrapper.appendChild(badge);
-              wrapper.appendChild(el);
+              wrapper.appendChild(videoEl);
               host.current?.appendChild(wrapper);
               nodes.set('local-video', wrapper);
             }
