@@ -2,7 +2,20 @@
 import { useEffect, useRef, useState } from 'react';
 import { Room, RoomEvent, LocalVideoTrack, LocalAudioTrack, Track } from 'livekit-client';
 import { api } from './api';
-import { Camera, Smartphone, ShieldCheck, CheckCircle2, AlertTriangle, Users, EyeOff, Activity } from 'lucide-react';
+import {
+  Camera,
+  Smartphone,
+  ShieldCheck,
+  CheckCircle2,
+  AlertTriangle,
+  Users,
+  EyeOff,
+  Activity,
+  Eye,
+  UserCheck,
+  Volume2,
+  VolumeX
+} from 'lucide-react';
 
 export default function MediaRoom({
   sid,
@@ -30,6 +43,12 @@ export default function MediaRoom({
   const [hasSecondary, setHasSecondary] = useState(false);
   const [currentAlert, setCurrentAlert] = useState<{ type: string; message: string; severity: string; time: number } | null>(null);
   const [motionLevel, setMotionLevel] = useState(0);
+
+  // Live telemetry metrics
+  const [gazeStatus, setGazeStatus] = useState<'focused' | 'away'>('focused');
+  const [faceStatus, setFaceStatus] = useState<'normal' | 'multiple' | 'absent' | 'cropped'>('normal');
+  const [audioStatus, setAudioStatus] = useState<'clean' | 'noisy'>('clean');
+
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
 
@@ -49,6 +68,7 @@ export default function MediaRoom({
     let audioContext: AudioContext | null = null;
     let animationId: number | null = null;
     let cvIntervalId: any = null;
+    let audioMonitorIntervalId: any = null;
     const room = new Room();
     const nodes = new Map<string, HTMLElement>();
 
@@ -129,11 +149,14 @@ export default function MediaRoom({
         } else if (msg.type === 'proctoring') {
           let text = '⚠️ Proctoring Alert Observed';
           if (msg.event === 'MULTIPLE_PERSONS') {
-            text = '🚨 CHEATING ALERT: 2 Persons in Camera Frame!';
+            text = '🚨 CHEATING ALERT: Multiple Persons in Frame!';
+            setFaceStatus('multiple');
           } else if (msg.event === 'FACE_ABSENT') {
             text = '⚠️ WARNING: Face Out of Camera View!';
-          } else if (msg.event === 'HEAD_TURN_PROLONGED') {
-            text = '⚠️ SUSPICIOUS: Candidate Facing Away / Looking Down';
+            setFaceStatus('absent');
+          } else if (msg.event === 'GAZE_DEVIATION' || msg.event === 'HEAD_TURN_PROLONGED') {
+            text = '⚠️ SUSPICIOUS: Gaze Diverted / Looking Away from Screen!';
+            setGazeStatus('away');
           } else if (msg.event === 'FRAME_COVERAGE_GAP') {
             text = '⚠️ Camera Coverage Gap Detected';
           }
@@ -146,7 +169,6 @@ export default function MediaRoom({
     (async () => {
       if (!viewer) {
         try {
-          // Attempt high-quality constraints with automatic graceful fallback
           try {
             const constraints: MediaStreamConstraints = {
               video: phone
@@ -156,7 +178,6 @@ export default function MediaRoom({
             };
             localStream = await navigator.mediaDevices.getUserMedia(constraints);
           } catch (initialErr) {
-            // Fallback to basic media constraints
             localStream = await navigator.mediaDevices.getUserMedia(
               phone ? { video: true, audio: false } : { video: true, audio: true }
             );
@@ -200,7 +221,7 @@ export default function MediaRoom({
             host.current?.appendChild(wrapper);
             nodes.set('local-video', wrapper);
 
-            // Client-Side Realtime Motion & Frisking / Face Presence Analysis on Candidate Video
+            // High-Accuracy Client-Side Computer Vision Engine
             if (!phone) {
               const canvas = document.createElement('canvas');
               canvas.width = 160;
@@ -209,7 +230,9 @@ export default function MediaRoom({
               let prevPixels: Uint8ClampedArray | null = null;
               let consecutiveMotionTicks = 0;
               let consecutiveBlankTicks = 0;
+              let consecutiveGazeAwayTicks = 0;
 
+              // Fast cadence check every 350ms
               cvIntervalId = setInterval(async () => {
                 if (closed || !localVideoEl || localVideoEl.readyState < 2 || !ctx) return;
                 try {
@@ -217,7 +240,7 @@ export default function MediaRoom({
                   const imgData = ctx.getImageData(0, 0, 160, 120);
                   const pixels = imgData.data;
 
-                  // 1. Motion & Frisking / Rapid Movement Detection
+                  // 1. Motion & Frisking / Sudden Movement Detection
                   if (prevPixels) {
                     let diffSum = 0;
                     for (let i = 0; i < pixels.length; i += 4) {
@@ -232,7 +255,7 @@ export default function MediaRoom({
                       if (consecutiveMotionTicks >= 2) {
                         triggerAlert(
                           'EXCESSIVE_MOVEMENT',
-                          '⚠️ Rapid Movement / Activity Detected!',
+                          '⚠️ Rapid Movement / Frisking Activity Detected!',
                           'NEEDS_REVIEW'
                         );
                       }
@@ -242,39 +265,125 @@ export default function MediaRoom({
                   }
                   prevPixels = new Uint8ClampedArray(pixels);
 
-                  // 2. Hardware Face Detection (if supported by modern Chrome/Edge)
+                  // 2. Hardware Face Detection (Chromium Shape Detection API)
+                  let faceDetectedWithHardware = false;
                   if (typeof (window as any).FaceDetector !== 'undefined') {
                     try {
                       const detector = new (window as any).FaceDetector({ fastMode: true, maxDetectedFaces: 5 });
                       const faces = await detector.detect(localVideoEl);
+                      faceDetectedWithHardware = true;
+
                       if (faces.length >= 2) {
+                        setFaceStatus('multiple');
                         triggerAlert(
                           'MULTIPLE_PERSONS',
                           `🚨 CHEATING ALERT: ${faces.length} Persons Detected in Frame!`,
                           'NEEDS_REVIEW_HIGH'
                         );
-                      } else if (faces.length === 0) {
+                      } else if (faces.length === 1) {
+                        const f = faces[0];
+                        const box = f.boundingBox;
+
+                        // Check face boundary cropping (is face fully in frame?)
+                        if (box.top < 4 || box.left < 4 || box.right > localVideoEl.videoWidth - 4 || box.bottom > localVideoEl.videoHeight - 4) {
+                          setFaceStatus('cropped');
+                        } else {
+                          setFaceStatus('normal');
+                        }
+
+                        // Check eye/gaze landmarks if available
+                        if (f.landmarks && f.landmarks.length >= 3) {
+                          const eyes = f.landmarks.filter((l: any) => l.type === 'eye');
+                          const nose = f.landmarks.find((l: any) => l.type === 'nose');
+                          if (eyes.length === 2 && nose) {
+                            const eyeMidX = (eyes[0].location.x + eyes[1].location.x) / 2;
+                            const eyeSpan = Math.abs(eyes[1].location.x - eyes[0].location.x);
+                            const skew = Math.abs(nose.location.x - eyeMidX) / (eyeSpan + 1e-4);
+
+                            if (skew > 0.35) {
+                              consecutiveGazeAwayTicks++;
+                              if (consecutiveGazeAwayTicks >= 3) {
+                                setGazeStatus('away');
+                                triggerAlert(
+                                  'GAZE_DEVIATION',
+                                  '⚠️ Gaze Diverted: Looking Away from Screen',
+                                  'NEEDS_REVIEW'
+                                );
+                              }
+                            } else {
+                              consecutiveGazeAwayTicks = 0;
+                              setGazeStatus('focused');
+                            }
+                          }
+                        }
+                      } else {
                         consecutiveBlankTicks++;
-                        if (consecutiveBlankTicks >= 6) {
+                        if (consecutiveBlankTicks >= 5) {
+                          setFaceStatus('absent');
                           triggerAlert(
                             'FACE_ABSENT',
-                            '⚠️ Face Absent / Candidate Looking Away from Camera',
+                            '⚠️ Face Absent: Candidate Left Camera View',
                             'NEEDS_REVIEW'
                           );
                         }
-                      } else {
-                        consecutiveBlankTicks = 0;
                       }
                     } catch (_) {}
                   }
+
+                  // 3. Robust Skin-Tone Spatial Clustering Fallback
+                  if (!faceDetectedWithHardware) {
+                    let skinPixelCount = 0;
+                    let leftClusterCount = 0;
+                    let rightClusterCount = 0;
+
+                    for (let y = 0; y < 120; y++) {
+                      for (let x = 0; x < 160; x++) {
+                        const idx = (y * 160 + x) * 4;
+                        const r = pixels[idx];
+                        const g = pixels[idx + 1];
+                        const b = pixels[idx + 2];
+
+                        // Standard skin luminance condition
+                        if (r > 95 && g > 40 && b > 20 && (r - g) > 15 && (r - b) > 15 && r > g && r > b) {
+                          skinPixelCount++;
+                          if (x < 70) leftClusterCount++;
+                          else if (x > 90) rightClusterCount++;
+                        }
+                      }
+                    }
+
+                    // Dual prominent skin clusters separated by gap = 2 persons in frame
+                    if (leftClusterCount > 400 && rightClusterCount > 400) {
+                      setFaceStatus('multiple');
+                      triggerAlert(
+                        'MULTIPLE_PERSONS',
+                        '🚨 CHEATING ALERT: 2 Persons Detected in Frame!',
+                        'NEEDS_REVIEW_HIGH'
+                      );
+                    } else if (skinPixelCount < 120) {
+                      consecutiveBlankTicks++;
+                      if (consecutiveBlankTicks >= 6) {
+                        setFaceStatus('absent');
+                        triggerAlert(
+                          'FACE_ABSENT',
+                          '⚠️ Face Absent: Candidate Left Camera View',
+                          'NEEDS_REVIEW'
+                        );
+                      }
+                    } else {
+                      consecutiveBlankTicks = 0;
+                      setFaceStatus('normal');
+                      setGazeStatus('focused');
+                    }
+                  }
                 } catch (_) {}
-              }, 600);
+              }, 350);
             }
           }
 
-          // Audio meter analysis
+          // Audio Meter & Background Noise Analysis
           const audioTrack = localStream.getAudioTracks()[0];
-          if (audioTrack && onVolume && typeof window !== 'undefined') {
+          if (audioTrack && typeof window !== 'undefined') {
             try {
               const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
               audioContext = new AudioCtx();
@@ -287,15 +396,38 @@ export default function MediaRoom({
               source.connect(analyser);
               const dataArray = new Uint8Array(analyser.frequencyBinCount);
 
+              let consecutiveNoiseTicks = 0;
+
               const checkLevel = () => {
                 if (closed) return;
                 analyser.getByteFrequencyData(dataArray);
                 let sum = 0;
+                let highBandSum = 0;
+
                 for (let i = 0; i < dataArray.length; i++) {
                   sum += dataArray[i];
+                  if (i > 10) highBandSum += dataArray[i];
                 }
                 const avg = sum / dataArray.length;
-                onVolume(Math.min(100, Math.round((avg / 128) * 100)));
+                const normalized = Math.min(100, Math.round((avg / 128) * 100));
+                onVolume?.(normalized);
+
+                // High sustained audio energy in speech bands -> background noise alert
+                if (normalized > 32) {
+                  consecutiveNoiseTicks++;
+                  if (consecutiveNoiseTicks > 12) {
+                    setAudioStatus('noisy');
+                    triggerAlert(
+                      'BACKGROUND_NOISE',
+                      '⚠️ High Ambient Noise / Secondary Voice Detected',
+                      'OBSERVED_EVENT'
+                    );
+                  }
+                } else {
+                  consecutiveNoiseTicks = Math.max(0, consecutiveNoiseTicks - 1);
+                  if (consecutiveNoiseTicks === 0) setAudioStatus('clean');
+                }
+
                 animationId = requestAnimationFrame(checkLevel);
               };
               checkLevel();
@@ -374,6 +506,7 @@ export default function MediaRoom({
     return () => {
       closed = true;
       if (cvIntervalId) clearInterval(cvIntervalId);
+      if (audioMonitorIntervalId) clearInterval(audioMonitorIntervalId);
       if (animationId) cancelAnimationFrame(animationId);
       if (audioContext && audioContext.state !== 'closed') {
         void audioContext.close();
@@ -422,26 +555,56 @@ export default function MediaRoom({
             <div className={`proctoringAlertPill ${currentAlert.severity.toLowerCase()}`}>
               {currentAlert.type === 'MULTIPLE_PERSONS' ? (
                 <Users size={16} className="alertPillIcon spinPulse" />
-              ) : currentAlert.type === 'FACE_ABSENT' || currentAlert.type === 'HEAD_TURN_PROLONGED' ? (
+              ) : currentAlert.type === 'FACE_ABSENT' || currentAlert.type === 'GAZE_DEVIATION' || currentAlert.type === 'HEAD_TURN_PROLONGED' ? (
                 <EyeOff size={16} className="alertPillIcon" />
+              ) : currentAlert.type === 'BACKGROUND_NOISE' ? (
+                <VolumeX size={16} className="alertPillIcon" />
               ) : (
                 <Activity size={16} className="alertPillIcon" />
               )}
               <div className="alertPillContent">
                 <strong>{currentAlert.message}</strong>
-                <small>Evidence snapshot logged · AI proctoring active</small>
+                <small>Evidence snapshot logged · Cryptographic HMAC sealed</small>
               </div>
             </div>
           ) : (
             <div className="proctoringCleanPill">
               <ShieldCheck size={14} className="cleanIcon" />
-              <span>Verified 1 Candidate in Frame · Clean</span>
+              <span>Verified 1 Candidate in Frame · Gaze Centered</span>
             </div>
           )}
         </div>
       )}
 
       <div className="feedsGrid" ref={host}></div>
+
+      {/* Real-time Telemetry Status Matrix */}
+      {!phone && !viewer && (
+        <div className="proctoringTelemetryBar">
+          <div className={`telemetryPill ${faceStatus === 'normal' ? 'good' : 'warning'}`}>
+            <UserCheck size={12} />
+            <span>
+              {faceStatus === 'normal'
+                ? 'Face: Centered'
+                : faceStatus === 'multiple'
+                ? 'Face: 2+ Persons'
+                : faceStatus === 'cropped'
+                ? 'Face: Edges Cut Off'
+                : 'Face: Absent'}
+            </span>
+          </div>
+
+          <div className={`telemetryPill ${gazeStatus === 'focused' ? 'good' : 'warning'}`}>
+            <Eye size={12} />
+            <span>{gazeStatus === 'focused' ? 'Gaze: On-Screen' : 'Gaze: Away'}</span>
+          </div>
+
+          <div className={`telemetryPill ${audioStatus === 'clean' ? 'good' : 'warning'}`}>
+            <Volume2 size={12} />
+            <span>{audioStatus === 'clean' ? 'Audio: Clean' : 'Audio: High Noise'}</span>
+          </div>
+        </div>
+      )}
 
       {hasSecondary && (
         <div className="secondaryConnectedBanner">

@@ -142,3 +142,10 @@
   .setupLayout, .interviewLayout { grid-template-columns: 1fr; }
   .setupAside, .interviewAside { width: 100%; }
 }
+
+
+/* Proctoring Telemetry Badges */
+.proctoringTelemetryBar { display: flex; gap: 8px; padding: 8px 12px; background: #0f172a; border-top: 1px solid #1e293b; flex-wrap: wrap; }
+.telemetryPill { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border-radius: 4px; font-size: 10px; font-weight: 600; letter-spacing: 0.2px; }
+.telemetryPill.good { background: rgba(34, 197, 94, 0.15); color: #86efac; border: 1px solid rgba(34, 197, 94, 0.3); }
+.telemetryPill.warning { background: rgba(239, 68, 68, 0.2); color: #fca5a5; border: 1px solid rgba(239, 68, 68, 0.4); animation: pulseRec 1.2s infinite; }

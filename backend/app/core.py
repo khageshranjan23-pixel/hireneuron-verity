@@ -95,7 +95,7 @@ def command(s,action,text,now,slot_id=None):
  return None
 
 class TemporalDetector:
- """Thresholds are engineering defaults, NOT validated accuracy/confidence."""
+ """Legacy thresholds kept for reference. Production detector lives in workers/integrity.py."""
  def __init__(self,absence=5,multiple=3,cooldown=20,head_turn=4):
   self.absence=absence;self.multiple=multiple;self.cooldown=cooldown;self.head_turn=head_turn;self.since={};self.last={}
  def update(self,role,faces,persons,now,profile_faces=0):

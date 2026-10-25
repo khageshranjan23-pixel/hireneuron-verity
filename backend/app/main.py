@@ -239,6 +239,12 @@ def media_token(sid:str,a=Depends(auth)):
  if s['state'] not in ('BLUEPRINT_FROZEN','LISTENING'):raise HTTPException(409,'Session inactive')
  if not os.getenv('LIVEKIT_URL'):raise HTTPException(503,'LiveKit not configured; text mode available')
  return {'url':os.environ['LIVEKIT_URL'],'token':media.token(sid,a['role'])}
+@app.get('/sessions/{sid}/events')
+def list_events(sid:str,a=Depends(auth)):
+ allow(a,sid,['candidate','recruiter'])
+ with store.connect() as c:s=store.get(c,sid)
+ return s.get('events',[])
+
 @app.post('/sessions/{sid}/events')
 def event(sid:str,body:Event,a=Depends(auth)):
  allow(a,sid,['worker'])

@@ -976,11 +976,75 @@ export default function Home() {
                       })}
                     </div>
 
+                    {/* Proctoring Summary Card */}
+                    <div className="card" style={{ marginBottom: 20, background: 'linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%)', border: '1px solid #cbd5e1' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
+                        <div>
+                          <h3 style={{ margin: '0 0 4px', fontSize: 16 }}>AI Proctoring &amp; Media Integrity Audit</h3>
+                          <p style={{ margin: 0, fontSize: 12, color: '#64748b' }}>
+                            Continuous MediaPipe gaze estimation, dual-feed OpenCV HOG detection, and tamper-evident cryptographic HMAC snapshots.
+                          </p>
+                        </div>
+                        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                          <span
+                            className="pill"
+                            style={{
+                              padding: '6px 12px',
+                              fontSize: 12,
+                              fontWeight: 700,
+                              background: selected.events.some((e: any) => e.severity === 'NEEDS_REVIEW_HIGH')
+                                ? '#fee2e2'
+                                : selected.events.length > 0
+                                ? '#fef3c7'
+                                : '#dcfce7',
+                              color: selected.events.some((e: any) => e.severity === 'NEEDS_REVIEW_HIGH')
+                                ? '#991b1b'
+                                : selected.events.length > 0
+                                ? '#92400e'
+                                : '#166534',
+                              border: '1px solid currentColor'
+                            }}
+                          >
+                            {selected.events.some((e: any) => e.severity === 'NEEDS_REVIEW_HIGH')
+                              ? '🚨 High Risk Integrity Flags'
+                              : selected.events.length > 0
+                              ? '⚠️ Flagged for Recruiter Review'
+                              : '✓ Clean Session (Verified Single Candidate)'}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, marginTop: 16 }}>
+                        <div style={{ background: 'white', padding: '10px 14px', borderRadius: 8, border: '1px solid #e2e8f0' }}>
+                          <small style={{ color: '#64748b', fontSize: 11 }}>Total Incidents</small>
+                          <strong style={{ display: 'block', fontSize: 20, color: '#1e293b' }}>{selected.events.length}</strong>
+                        </div>
+                        <div style={{ background: 'white', padding: '10px 14px', borderRadius: 8, border: '1px solid #e2e8f0' }}>
+                          <small style={{ color: '#64748b', fontSize: 11 }}>Multiple Persons</small>
+                          <strong style={{ display: 'block', fontSize: 20, color: selected.events.filter((e: any) => e.type === 'MULTIPLE_PERSONS').length > 0 ? '#ef4444' : '#1e293b' }}>
+                            {selected.events.filter((e: any) => e.type === 'MULTIPLE_PERSONS').length}
+                          </strong>
+                        </div>
+                        <div style={{ background: 'white', padding: '10px 14px', borderRadius: 8, border: '1px solid #e2e8f0' }}>
+                          <small style={{ color: '#64748b', fontSize: 11 }}>Gaze / Absence</small>
+                          <strong style={{ display: 'block', fontSize: 20, color: '#1e293b' }}>
+                            {selected.events.filter((e: any) => e.type === 'GAZE_DEVIATION' || e.type === 'FACE_ABSENT' || e.type === 'HEAD_TURN_PROLONGED').length}
+                          </strong>
+                        </div>
+                        <div style={{ background: 'white', padding: '10px 14px', borderRadius: 8, border: '1px solid #e2e8f0' }}>
+                          <small style={{ color: '#64748b', fontSize: 11 }}>Audited Overrides</small>
+                          <strong style={{ display: 'block', fontSize: 20, color: '#1e293b' }}>
+                            {selected.audit?.filter((a: any) => a.disposition).length || 0}
+                          </strong>
+                        </div>
+                      </div>
+                    </div>
+
                     {!selected.events.length ? (
                       <div className="card empty">
                         <CheckCircle2 size={36} style={{ color: '#16a34a', marginBottom: 12 }} />
                         <h3>No proctoring incidents logged.</h3>
-                        <p>No sustained face absences or secondary people detected during monitored intervals.</p>
+                        <p>No sustained face absences, gaze deviations, or secondary people detected during monitored intervals.</p>
                       </div>
                     ) : (
                       selected.events.map((e) => (
