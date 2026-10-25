@@ -513,6 +513,16 @@ def candidate_enter_interview(sid: str, a=Depends(auth)):
         
         session_id = sched['session_id']
         s = store.get(c, session_id)
+
+        # If trial session is completed or disqualified, auto-reset it so candidate can retake anytime
+        if (session_id == 'trial-session-rtpl-001' or cid == 'cnd-trial-001') and s.get('state') in ('COMPLETED', 'DISQUALIFIED', 'REVIEW_READY'):
+            cfg = s['config']
+            new_s = core.new_session(cfg)
+            new_s['id'] = session_id
+            with store.tx() as tx_c:
+                store.put(tx_c, new_s)
+                store.update_schedule_status(tx_c, session_id, 'SCHEDULED')
+            s = new_s
         
         # Check early join window (allow if within early_join_minutes or if already in progress)
         now = time.time()
@@ -532,6 +542,24 @@ def candidate_enter_interview(sid: str, a=Depends(auth)):
         'job_title': s['config']['job_title'],
         'state': s['state']
     }
+
+@app.post('/api/candidate/interviews/{sid}/reset')
+def candidate_reset_interview(sid: str, a=Depends(auth)):
+    """Allows candidate to reset a completed interview session to retake it."""
+    allow(a, None, ['candidate'])
+    cid = a.get('candidate_id')
+    with store.tx() as c:
+        sched = store.get_schedule_by_session_id(c, sid) or store.get_schedule_by_id(c, sid)
+        if not sched or sched['candidate_id'] != cid:
+            raise HTTPException(403, 'This interview is not assigned to your account.')
+        session_id = sched['session_id']
+        s = store.get(c, session_id)
+        cfg = s['config']
+        new_s = core.new_session(cfg)
+        new_s['id'] = session_id
+        store.put(c, new_s)
+        store.update_schedule_status(c, session_id, 'SCHEDULED')
+    return {'status': 'reset', 'session_id': session_id}
 
 # ── Existing Core Session Endpoints (100% PRESERVED) ─────────────────────────
 @app.post('/sessions')
@@ -658,10 +686,33 @@ def start(sid: str, a=Depends(auth)):
     allow(a, sid, ['candidate'])
     with store.tx() as c:
         s = store.get(c, sid)
+        # Idempotent: if already listening, cleanly return current state
+        if s.get('state') == 'LISTENING':
+            return public(s, a)
+        # If session is already completed or disqualified (e.g. trial session retake), reset it!
+        if s.get('state') in ('COMPLETED', 'DISQUALIFIED', 'REVIEW_READY'):
+            cfg = s['config']
+            s = core.new_session(cfg)
+            s['id'] = sid
+        # Ensure candidate consent exists
+        if not any(x.get('role') == 'candidate' for x in s.get('consents', [])):
+            s.setdefault('consents', []).append({'role': 'candidate', 'policy': '2026-10-25', 'at': time.time()})
         core.start(s, time.time())
         store.put(c, s)
         store.update_schedule_status(c, sid, 'IN_PROGRESS')
     return public(s, a)
+
+@app.post('/sessions/{sid}/reset')
+def reset_session_endpoint(sid: str, a=Depends(auth)):
+    allow(a, sid, ['candidate', 'recruiter', 'admin'])
+    with store.tx() as c:
+        s = store.get(c, sid)
+        cfg = s['config']
+        new_s = core.new_session(cfg)
+        new_s['id'] = sid
+        store.put(c, new_s)
+        store.update_schedule_status(c, sid, 'SCHEDULED')
+    return {'status': 'reset', 'session': public(new_s, a)}
 
 @app.post('/sessions/{sid}/action')
 def action(sid: str, body: Action, a=Depends(auth)):

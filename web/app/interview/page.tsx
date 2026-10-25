@@ -559,7 +559,38 @@ export default function CandidateInterview() {
               <span className="summaryPill">✓ Evidence Sealed with HMAC</span>
               <span className="summaryPill">✓ Evaluation In Progress</span>
             </div>
-            <p className="muted" style={{ marginTop: 24, fontSize: 13 }}>You may safely close this browser window.</p>
+            <div style={{ display: 'flex', gap: 12, justifyContent: 'center', marginTop: 24, flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                className="btnPrimary"
+                disabled={busy}
+                onClick={async () => {
+                  try {
+                    setBusy(true);
+                    await api(`/sessions/${sid}/reset`, token, 'POST');
+                    const refreshed = await api(`/sessions/${sid}`, token);
+                    setS(refreshed);
+                    setText('');
+                    setInterimText('');
+                  } catch (e: any) {
+                    setError(e.message || 'Failed to restart interview.');
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}
+              >
+                <RotateCcw size={16} /> Retake / Restart Interview
+              </button>
+              <button
+                type="button"
+                className="btnSecondary"
+                onClick={() => window.location.href = '/candidate/dashboard'}
+              >
+                Return to Candidate Dashboard
+              </button>
+            </div>
+            <p className="muted" style={{ marginTop: 20, fontSize: 13 }}>You may safely close this browser window or practice again above.</p>
           </div>
 
         ) : (

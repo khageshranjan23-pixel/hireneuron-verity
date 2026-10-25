@@ -211,7 +211,24 @@ export default function CandidateDashboardPage() {
                         {new Date(item.scheduled_time * 1000).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' })}
                       </small>
                     </div>
-                    <span className="statusPill completed">COMPLETED</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <span className="statusPill completed">COMPLETED</span>
+                      <button
+                        onClick={async () => {
+                          try {
+                            const t = sessionStorage.getItem('rtpl_token') || '';
+                            await api(`/api/candidate/interviews/${item.session_id}/reset`, t, 'POST');
+                            router.push(`/candidate/interviews/${item.session_id}/setup`);
+                          } catch (_) {
+                            router.push(`/candidate/interviews/${item.session_id}/setup`);
+                          }
+                        }}
+                        className="btnSecondary compact"
+                        style={{ fontSize: 12, padding: '5px 12px', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                      >
+                        🔄 Retake Interview
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
