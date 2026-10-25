@@ -338,7 +338,8 @@ export default function Interview() {
                       onClick={() =>
                         void run(async () => {
                           const r = await api(`/sessions/${sid}/pair`, token, 'POST');
-                          const u = `${location.origin}/phone#${r.nonce}`;
+                          const host = (location.hostname === 'localhost' || location.hostname === '127.0.0.1') ? `${location.hostname}:3000` : location.host;
+                          const u = `${location.protocol}//${host}/phone#${r.nonce}`;
                           setPhoneLink(u);
                           setQr(await QRCode.toDataURL(u, { width: 220, margin: 2 }));
                         })
@@ -350,7 +351,18 @@ export default function Interview() {
                       <div style={{ textAlign: 'center', marginTop: 14 }}>
                         <img src={qr} alt="Scan QR code with smartphone" width={220} height={220} />
                         <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
-                          <input readOnly value={phoneLink} style={{ fontSize: 11 }} />
+                          <input
+                            value={phoneLink}
+                            onChange={async (e) => {
+                              const val = e.target.value;
+                              setPhoneLink(val);
+                              try {
+                                if (val) setQr(await QRCode.toDataURL(val, { width: 220, margin: 2 }));
+                              } catch (_) {}
+                            }}
+                            placeholder="Smartphone pairing URL..."
+                            style={{ fontSize: 11 }}
+                          />
                           <button
                             className="secondary"
                             onClick={() => {
@@ -363,7 +375,7 @@ export default function Interview() {
                           </button>
                         </div>
                         <small style={{ color: '#64748b', marginTop: 6, display: 'block' }}>
-                          One-time challenge token expires in 180 seconds.
+                          One-time challenge token expires in 180 seconds. Editable for custom HTTPS tunnel domain.
                         </small>
                       </div>
                     )}

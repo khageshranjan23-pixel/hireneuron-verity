@@ -1,4 +1,4 @@
-export const BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+export const BASE = typeof window !== 'undefined' ? '/backend' : (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000');
 
 export async function api(path: string, token: string, method = 'GET', body?: unknown) {
   const headers: Record<string, string> = {};

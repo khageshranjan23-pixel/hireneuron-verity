@@ -119,11 +119,12 @@ async def generate_questions(sid:str,a=Depends(auth)):
  allow(a,sid,['recruiter'])
  with store.connect() as c:s=store.get(c,sid)
  if s['state']!='BLUEPRINT_FROZEN':raise HTTPException(409,'Cannot rewrite a started interview')
- rev=s['revision']
  try:s=await providers.questions(s)
  except Exception as e:raise HTTPException(503,'Question provider unavailable/invalid response; frozen templates retained') from e
  with store.tx() as c:
-  if store.get(c,sid)['revision']!=rev:raise HTTPException(409,'State changed; retry')
+  latest=store.get(c,sid)
+  if latest['state']!='BLUEPRINT_FROZEN':raise HTTPException(409,'State changed; retry')
+  s['coverage']=latest.get('coverage',{})
   store.put(c,s)
  return s
 @app.patch('/sessions/{sid}/questions/{qid}')
