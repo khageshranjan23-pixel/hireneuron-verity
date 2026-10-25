@@ -151,23 +151,61 @@ class ProductionProctor:
                 pitch_ratio = nose_drop / (face_height + 1e-6) - 0.45  # center around 0
                 head_pitch = math.asin(max(-0.99, min(0.99, pitch_ratio * 3.0)))
 
-                # Gaze estimation via iris landmarks if available (landmarks 468-477)
-                # Fallback to eye corner geometry
-                eye_center_x = (left_eye.x + right_eye.x) / 2
-                eye_center_from_nose = abs(eye_center_x - nose.x)
-                face_width = abs(right_eye.x - left_eye.x)
-                gaze_x_deviation = eye_center_from_nose / (face_width + 1e-6)
+                # Genuine Eye Gaze Tracking via Iris Landmarks (468: left iris, 473: right iris)
+                gaze_x_deviation = 0.0
+                eye_looking_away = False
+                is_blinking = False
 
-                # Looking away: significant yaw or gaze deviation
-                looking_away = abs(head_yaw) > 0.38 or gaze_x_deviation > 0.6
+                if len(landmarks) >= 478:
+                    l_iris = landmarks[468]
+                    r_iris = landmarks[473]
+                    l_outer = landmarks[33]
+                    l_inner = landmarks[133]
+                    r_inner = landmarks[362]
+                    r_outer = landmarks[263]
+                    l_top = landmarks[159]
+                    l_bottom = landmarks[145]
+                    r_top = landmarks[386]
+                    r_bottom = landmarks[374]
+
+                    l_w = math.hypot(l_inner.x - l_outer.x, l_inner.y - l_outer.y) or 1e-6
+                    r_w = math.hypot(r_outer.x - r_inner.x, r_outer.y - r_inner.y) or 1e-6
+                    l_h = abs(l_bottom.y - l_top.y)
+                    r_h = abs(r_bottom.y - r_top.y)
+                    l_ear = l_h / l_w
+                    r_ear = r_h / r_w
+
+                    # Blink rejection
+                    is_blinking = l_ear < 0.16 and r_ear < 0.16
+
+                    # Normalized iris horizontal coordinates within eye sockets
+                    l_norm_x = (l_iris.x - l_outer.x) / l_w
+                    r_norm_x = (r_iris.x - r_inner.x) / r_w
+                    raw_iris_x = ((l_norm_x + r_norm_x) / 2.0) - 0.5
+
+                    # Compensate for head yaw rotation
+                    compensated_gaze_x = raw_iris_x - math.sin(head_yaw) * 0.14
+                    gaze_x_deviation = min(1.0, max(0.0, abs(compensated_gaze_x) * 3.5))
+                    eye_looking_away = abs(compensated_gaze_x) > 0.14 and not is_blinking
+                else:
+                    # Fallback if iris landmarks unavailable
+                    eye_center_x = (left_eye.x + right_eye.x) / 2
+                    eye_center_from_nose = abs(eye_center_x - nose.x)
+                    face_width = abs(right_eye.x - left_eye.x)
+                    gaze_x_deviation = eye_center_from_nose / (face_width + 1e-6)
+                    eye_looking_away = gaze_x_deviation > 0.6
+
+                # Looking away: sustained head turn or validated iris gaze deviation (non-blinking)
+                looking_away = (abs(head_yaw) > 0.35) or eye_looking_away
 
                 # Eyes open check via blendshapes if available
-                eyes_open = True
+                eyes_open = not is_blinking
                 if result.face_blendshapes and i < len(result.face_blendshapes):
                     bs = {s.category_name: s.score for s in result.face_blendshapes[i]}
                     eye_blink_left = bs.get('eyeBlinkLeft', 0)
                     eye_blink_right = bs.get('eyeBlinkRight', 0)
-                    eyes_open = not (eye_blink_left > 0.7 and eye_blink_right > 0.7)
+                    if eye_blink_left > 0.7 and eye_blink_right > 0.7:
+                        eyes_open = False
 
                 detail = {
                     'head_yaw': round(head_yaw, 3),

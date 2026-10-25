@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { Room, RoomEvent, LocalVideoTrack, LocalAudioTrack, Track } from 'livekit-client';
 import { api } from './api';
 import {
@@ -60,15 +60,53 @@ export default function MediaRoom({
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
 
-  // Trigger an alert and auto-clear after 4.5 seconds
-  const triggerAlert = (type: string, message: string, severity: string) => {
+  const onProctoringAlertRef = useRef(onProctoringAlert);
+  onProctoringAlertRef.current = onProctoringAlert;
+
+  // Stable Trigger Alert
+  const triggerAlert = useCallback((type: string, message: string, severity: string) => {
     const alertObj = { type, message, severity, time: Date.now() };
     setCurrentAlert(alertObj);
-    onProctoringAlert?.(alertObj);
+    onProctoringAlertRef.current?.(alertObj);
     setTimeout(() => {
       setCurrentAlert((prev) => (prev?.time === alertObj.time ? null : prev));
     }, 4500);
-  };
+  }, []);
+
+  // Stable callbacks for proctoring children to prevent unnecessary rerenders
+  const handleBrowserViolation = useCallback((msg: string, severity: any) => {
+    triggerAlert('BROWSER_VIOLATION', msg, severity);
+    void api(`/sessions/${sid}/events`, token, 'POST', {
+      role: 'primary',
+      type: 'BROWSER_NAVIGATION',
+      severity,
+      jpeg_b64: '',
+      algorithm: 'browser-proctor-fullscreen-v1',
+      frame_count: 1,
+      start: Date.now() / 1000,
+      end: Date.now() / 1000
+    }).catch(() => {});
+  }, [sid, token, triggerAlert]);
+
+  const handleProctorViolation = useCallback((type: string, msg: string, severity: any, snapshotB64?: string) => {
+    triggerAlert(type, msg, severity);
+    void api(`/sessions/${sid}/events`, token, 'POST', {
+      role: 'primary',
+      type,
+      severity,
+      jpeg_b64: snapshotB64 || '',
+      algorithm: 'client-tfjs-facemesh-v2',
+      frame_count: 1,
+      start: Date.now() / 1000,
+      end: Date.now() / 1000
+    }).catch(() => {});
+  }, [sid, token, triggerAlert]);
+
+  const handleTelemetryUpdate = useCallback((metrics: any) => {
+    setFaceStatus(metrics.faces === 0 ? 'absent' : metrics.faces > 1 ? 'multiple' : 'normal');
+    setGazeStatus(metrics.gaze === 'focused' ? 'focused' : 'away');
+    setAudioStatus(metrics.audio === 'clean' ? 'clean' : 'noisy');
+  }, []);
 
   useEffect(() => {
     let closed = false;
@@ -378,42 +416,12 @@ export default function MediaRoom({
       {/* Embedded High-Precision AI Proctoring & Browser Violation Watchdog */}
       {!phone && !viewer && (
         <>
-          <BrowserProctor
-            onViolation={(msg, severity) => {
-              triggerAlert('BROWSER_VIOLATION', msg, severity);
-              void api(`/sessions/${sid}/events`, token, 'POST', {
-                role: 'primary',
-                type: 'BROWSER_NAVIGATION',
-                severity,
-                jpeg_b64: '',
-                algorithm: 'browser-proctor-fullscreen-v1',
-                frame_count: 1,
-                start: Date.now() / 1000,
-                end: Date.now() / 1000
-              }).catch(() => {});
-            }}
-          />
+          <BrowserProctor onViolation={handleBrowserViolation} />
 
           <AIProctorEngine
             mediaStream={localMediaStream}
-            onViolation={(type, msg, severity, snapshotB64) => {
-              triggerAlert(type, msg, severity);
-              void api(`/sessions/${sid}/events`, token, 'POST', {
-                role: 'primary',
-                type,
-                severity,
-                jpeg_b64: snapshotB64 || '',
-                algorithm: 'client-tfjs-facemesh-v1',
-                frame_count: 1,
-                start: Date.now() / 1000,
-                end: Date.now() / 1000
-              }).catch(() => {});
-            }}
-            onTelemetryUpdate={(metrics) => {
-              setFaceStatus(metrics.faces === 0 ? 'absent' : metrics.faces > 1 ? 'multiple' : 'normal');
-              setGazeStatus(metrics.gaze);
-              setAudioStatus(metrics.audio === 'clean' ? 'clean' : 'noisy');
-            }}
+            onViolation={handleProctorViolation}
+            onTelemetryUpdate={handleTelemetryUpdate}
           />
         </>
       )}

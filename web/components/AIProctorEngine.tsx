@@ -1,15 +1,30 @@
 'use client';
 
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import * as tf from '@tensorflow/tfjs';
 import '@tensorflow/tfjs-backend-webgl';
 import * as faceLandmarks from '@tensorflow-models/face-landmarks-detection';
+import {
+  estimateHeadPose,
+  estimateEyeGaze,
+  HeadPoseResult,
+  EyeGazeResult,
+  ProctorCalibration,
+  DEFAULT_CALIBRATION,
+  Keypoint3D
+} from '../lib/proctorGeometry';
+import ProctorDiagnostics, { DiagnosticsMetrics } from './ProctorDiagnostics';
 
 export interface ProctorTelemetry {
   faces: number;
-  gaze: 'focused' | 'away';
+  gaze: 'focused' | 'away' | 'blink' | 'unknown';
   headPose: 'centered' | 'turned';
-  audio: 'clean' | 'multiple_voices' | 'noisy';
+  audio: 'clean' | 'noisy';
+  yaw: number;
+  pitch: number;
+  roll: number;
+  gazeX: number;
+  gazeY: number;
 }
 
 export interface AIProctorEngineProps {
@@ -24,28 +39,61 @@ export default function AIProctorEngine({
   onTelemetryUpdate
 }: AIProctorEngineProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  // Model & Inference Lifecycle Refs
+  const detectorRef = useRef<faceLandmarks.FaceLandmarksDetector | null>(null);
+  const isInitializingRef = useRef<boolean>(false);
+  const isInferenceBusyRef = useRef<boolean>(false);
+  const isMountedRef = useRef<boolean>(true);
+  const modelInitCountRef = useRef<number>(0);
+
+  // Stable Callback Refs to prevent model teardown on parent rerenders
+  const onViolationRef = useRef(onViolation);
+  onViolationRef.current = onViolation;
+  const onTelemetryRef = useRef(onTelemetryUpdate);
+  onTelemetryRef.current = onTelemetryUpdate;
+
+  // Performance & Measurement Instrumentation Refs
+  const cameraFrameTimesRef = useRef<number[]>([]);
+  const inferenceTimesRef = useRef<number[]>([]);
+  const latencySamplesRef = useRef<number[]>([]);
+  const droppedFramesRef = useRef<number>(0);
+  const lastAnalyzedTimeRef = useRef<number>(Date.now());
+  const lastViolationDispatchRef = useRef<Map<string, number>>(new Map());
+
+  // Calibration state
+  const calibrationRef = useRef<ProctorCalibration>({ ...DEFAULT_CALIBRATION });
+  const calibrationSamplesRef = useRef<{ yaw: number; pitch: number; roll: number; gazeX: number; gazeY: number }[]>([]);
+  const isCalibratingRef = useRef<boolean>(false);
+
+  // Warning & Diagnostics UI State
   const [warning, setWarning] = useState<string>('');
   const [warningType, setWarningType] = useState<string>('');
-  const [engineReady, setEngineReady] = useState(false);
-
-  const lastWarningRef = useRef<string>('');
   const warningExpiryRef = useRef<number>(0);
-  const lastViolationDispatchRef = useRef<Map<string, number>>(new Map());
-  const multiFaceFramesRef = useRef<number>(0);
-  const noFaceFramesRef = useRef<number>(0);
-  const gazeAwayFramesRef = useRef<number>(0);
-  const lastMultiVoiceTimeRef = useRef<number>(0);
-  const isMultiVoiceActiveRef = useRef<boolean>(false);
+  const [overlayEnabled, setOverlayEnabled] = useState<boolean>(false);
 
-  // Instant warning display with 1.5s visual persistence so quick glances are visibly captured
-  const showWarning = useCallback((msg: string, type: string) => {
-    setWarning(msg);
-    setWarningType(type);
-    lastWarningRef.current = msg;
-    warningExpiryRef.current = Date.now() + 1500;
-  }, []);
+  // Diagnostics HUD State
+  const [diagMetrics, setDiagMetrics] = useState<DiagnosticsMetrics>({
+    cameraFps: 0,
+    inferenceFps: 0,
+    latencyMs: 0,
+    p50LatencyMs: 0,
+    p95LatencyMs: 0,
+    droppedFrames: 0,
+    modelInitCount: 0,
+    lastAnalyzedAgeMs: 0,
+    modelReady: false,
+    activeFaceCount: 0,
+    headPose: null,
+    eyeGaze: null,
+    activeObservation: null,
+    missReason: null,
+    overlayEnabled: false,
+    calibrationActive: false
+  });
 
-  // Helper to capture base64 snapshot from current video frame
+  // Snapshot Capture Helper
   const captureSnapshot = useCallback((): string => {
     try {
       const video = videoRef.current;
@@ -56,55 +104,95 @@ export default function AIProctorEngine({
       const ctx = canvas.getContext('2d');
       if (!ctx) return '';
       ctx.drawImage(video, 0, 0, 320, 240);
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
-      return dataUrl.split(',')[1] || '';
+      return canvas.toDataURL('image/jpeg', 0.85).split(',')[1] || '';
     } catch {
       return '';
     }
   }, []);
 
-  // Dispatch violation with 2-second rate-limiting per violation type
+  // Visual Warning with 1.2s Hold
+  const triggerVisualWarning = useCallback((msg: string, type: string) => {
+    setWarning(msg);
+    setWarningType(type);
+    warningExpiryRef.current = Date.now() + 1200;
+  }, []);
+
+  // Throttled Violation Dispatcher (2.5s debounce per type)
   const dispatchViolation = useCallback((type: string, message: string, severity: 'NEEDS_REVIEW' | 'NEEDS_REVIEW_HIGH' | 'OBSERVED_EVENT') => {
     const now = Date.now();
     const lastTime = lastViolationDispatchRef.current.get(type) || 0;
-    if (now - lastTime > 2000) {
+    if (now - lastTime > 2500) {
       lastViolationDispatchRef.current.set(type, now);
       const snapshot = captureSnapshot();
-      onViolation?.(type, message, severity, snapshot);
+      onViolationRef.current?.(type, message, severity, snapshot);
     }
-  }, [captureSnapshot, onViolation]);
+  }, [captureSnapshot]);
 
+  // Calibration Trigger
+  const triggerCalibration = useCallback(() => {
+    calibrationSamplesRef.current = [];
+    isCalibratingRef.current = true;
+    triggerVisualWarning('🎯 Calibrating neutral straight-ahead pose…', 'CALIBRATING');
+  }, [triggerVisualWarning]);
+
+  const resetCalibration = useCallback(() => {
+    calibrationRef.current = { ...DEFAULT_CALIBRATION };
+    triggerVisualWarning('🔄 Calibration reset to defaults.', 'CALIBRATING');
+  }, [triggerVisualWarning]);
+
+  // SECTION 1: DETECTOR LIFECYCLE (STABLE, INITIALIZES ONCE PER STREAM)
   useEffect(() => {
-    if (!mediaStream || mediaStream.getVideoTracks().length === 0) return;
+    isMountedRef.current = true;
 
-    let detector: faceLandmarks.FaceLandmarksDetector | null = null;
+    if (!mediaStream || mediaStream.getVideoTracks().length === 0) {
+      return;
+    }
+
+    let isCancelled = false;
+    let videoCallbackHandle: number | null = null;
+    let animFrameHandle: number | null = null;
     let audioContext: AudioContext | null = null;
-    let running = true;
-    let animationFrameId: number;
+    let audioCheckInterval: NodeJS.Timeout | null = null;
 
-    const start = async () => {
+    const initDetectorAndLoop = async () => {
+      // Guard against concurrent initializations
+      if (detectorRef.current || isInitializingRef.current) return;
+      isInitializingRef.current = true;
+
       try {
         await tf.setBackend('webgl');
         await tf.ready();
 
-        // Initialize MediaPipe FaceMesh with maxFaces: 5 for multi-person detection
-        detector = await faceLandmarks.createDetector(
+        if (isCancelled || !isMountedRef.current) return;
+
+        // Create FaceLandmarks detector with maxFaces: 5
+        const detector = await faceLandmarks.createDetector(
           faceLandmarks.SupportedModels.MediaPipeFaceMesh,
           {
             runtime: 'tfjs',
             refineLandmarks: true,
-            maxFaces: 5 // Crucial: detects up to 5 simultaneous faces in the frame
+            maxFaces: 5
           }
         );
 
-        const video = videoRef.current;
-        if (!video) return;
-        video.srcObject = mediaStream;
-        try {
-          await video.play();
-        } catch (_) {}
+        if (isCancelled || !isMountedRef.current) {
+          detector.dispose?.();
+          return;
+        }
 
-        // Setup Audio Analyser for multi-voice and background noise detection
+        detectorRef.current = detector;
+        modelInitCountRef.current += 1;
+
+        // Attach stream to internal video element
+        const video = videoRef.current;
+        if (video) {
+          video.srcObject = mediaStream;
+          try {
+            await video.play();
+          } catch (_) {}
+        }
+
+        // Setup Ambient Audio Monitor
         try {
           const audioTracks = mediaStream.getAudioTracks();
           if (audioTracks.length > 0) {
@@ -114,280 +202,349 @@ export default function AIProctorEngine({
               void audioContext.resume();
             }
             const analyser = audioContext.createAnalyser();
-            analyser.fftSize = 2048;
+            analyser.fftSize = 512;
             const source = audioContext.createMediaStreamSource(new MediaStream([audioTracks[0]]));
             source.connect(analyser);
-            const dataArray = new Uint8Array(analyser.frequencyBinCount);
+            const audioData = new Uint8Array(analyser.frequencyBinCount);
 
-            // Spectral peak analysis for multi-voice detection
-            const checkAudio = () => {
-              if (!running) return;
+            audioCheckInterval = setInterval(() => {
+              if (isCancelled) return;
               try {
-                analyser.getByteFrequencyData(dataArray);
-                const threshold = 45;
-                let peakCount = 0;
-                let lastPeakFreq = 0;
-
-                for (let i = 0; i < dataArray.length; i++) {
-                  if (dataArray[i] > threshold) {
-                    if (i - lastPeakFreq > 45) {
-                      peakCount++;
-                      lastPeakFreq = i;
-                    }
-                  }
-                }
-
-                if (peakCount > 2) {
-                  if (!isMultiVoiceActiveRef.current) {
-                    isMultiVoiceActiveRef.current = true;
-                    setWarning('⚠️ Multiple voices detected in background');
-                    setWarningType('BACKGROUND_NOISE');
-                    dispatchViolation('BACKGROUND_NOISE', 'Multiple voices detected in background', 'OBSERVED_EVENT');
-                    lastMultiVoiceTimeRef.current = Date.now();
-                  } else {
-                    const now = Date.now();
-                    if (now - lastMultiVoiceTimeRef.current > 2000) {
-                      dispatchViolation('BACKGROUND_NOISE', 'Multiple voices detected in background', 'OBSERVED_EVENT');
-                      lastMultiVoiceTimeRef.current = now;
-                    }
-                  }
-                } else if (isMultiVoiceActiveRef.current) {
-                  isMultiVoiceActiveRef.current = false;
-                  if (lastWarningRef.current === '⚠️ Multiple voices detected in background') {
-                    setWarning('');
-                    setWarningType('');
-                  }
+                analyser.getByteFrequencyData(audioData);
+                let sum = 0;
+                for (let i = 0; i < audioData.length; i++) sum += audioData[i];
+                const avgVolume = sum / audioData.length;
+                if (avgVolume > 65) {
+                  triggerVisualWarning('⚠️ High background audio activity', 'BACKGROUND_NOISE');
+                  dispatchViolation('BACKGROUND_NOISE', 'High background audio noise detected', 'OBSERVED_EVENT');
                 }
               } catch (_) {}
-            };
-
-            const audioInterval = setInterval(checkAudio, 300);
-            return () => clearInterval(audioInterval);
+            }, 500);
           }
-        } catch (audioErr) {
-          console.warn('Audio proctor init skipped:', audioErr);
-        }
+        } catch (_) {}
 
-        setEngineReady(true);
+        // SECTION 2: HIGH-PERFORMANCE INFERENCE LOOP
+        let lastTelemetryEmit = 0;
 
-        let lastRun = 0;
-        const TARGET_FPS = 15; // 15 FPS for ultra-responsive sub-70ms reaction time
+        const processFrame = async () => {
+          if (isCancelled || !isMountedRef.current) return;
 
-        const detect = async () => {
-          if (!running) return;
+          const now = performance.now();
 
-          const now = Date.now();
-          if (now - lastRun < 1000 / TARGET_FPS) {
-            animationFrameId = requestAnimationFrame(detect);
+          // Camera FPS tracking
+          cameraFrameTimesRef.current.push(now);
+          if (cameraFrameTimesRef.current.length > 30) cameraFrameTimesRef.current.shift();
+
+          // Single-inference lock to drop stale frames
+          if (isInferenceBusyRef.current) {
+            droppedFramesRef.current += 1;
+            scheduleNextFrame();
             return;
           }
-          lastRun = now;
 
-          if (!video || video.readyState < 2 || !detector) {
-            animationFrameId = requestAnimationFrame(detect);
+          if (!video || video.readyState < 2 || !detectorRef.current) {
+            scheduleNextFrame();
             return;
           }
+
+          isInferenceBusyRef.current = true;
+          const inferenceStart = performance.now();
 
           try {
-            const faces = await detector.estimateFaces(video);
+            // High-speed video tracking mode (staticImageMode: false avoids redundant full-frame object detector)
+            const faces = await detectorRef.current.estimateFaces(video, {
+              staticImageMode: false,
+              flipHorizontal: false
+            });
 
-            // 1. Face Absence Detection (Immediate)
-            if (faces.length === 0) {
-              noFaceFramesRef.current++;
-              if (noFaceFramesRef.current >= 2) {
-                const msg = '⚠️ Face not detected. Please stay in camera view.';
-                showWarning(msg, 'FACE_ABSENT');
-                dispatchViolation('FACE_ABSENT', msg, 'NEEDS_REVIEW');
-                onTelemetryUpdate?.({
-                  faces: 0,
-                  gaze: 'away',
-                  headPose: 'turned',
-                  audio: isMultiVoiceActiveRef.current ? 'multiple_voices' : 'clean'
-                });
-              }
-              animationFrameId = requestAnimationFrame(detect);
-              return;
-            } else {
-              noFaceFramesRef.current = 0;
-            }
+            const inferenceEnd = performance.now();
+            const latency = inferenceEnd - inferenceStart;
 
-            // 2. Multiple Faces Detection (Instant 1-Frame Catch)
+            // Track inference performance metrics
+            inferenceTimesRef.current.push(inferenceEnd);
+            if (inferenceTimesRef.current.length > 30) inferenceTimesRef.current.shift();
+            latencySamplesRef.current.push(latency);
+            if (latencySamplesRef.current.length > 30) latencySamplesRef.current.shift();
+
+            lastAnalyzedTimeRef.current = Date.now();
+
+            let activeObservation: string | null = null;
+            let missReason: string | null = null;
+            let headPoseResult: HeadPoseResult | null = null;
+            let eyeGazeResult: EyeGazeResult | null = null;
+
+            // 1. Multiple Faces Observation (Immediate)
             if (faces.length > 1) {
-              const msg = `🚨 Cheating Alert: Multiple faces detected (${faces.length})`;
-              showWarning(msg, 'MULTIPLE_PERSONS');
-              dispatchViolation('MULTIPLE_PERSONS', msg, 'NEEDS_REVIEW_HIGH');
-              onTelemetryUpdate?.({
-                faces: faces.length,
-                gaze: 'focused',
-                headPose: 'centered',
-                audio: isMultiVoiceActiveRef.current ? 'multiple_voices' : 'clean'
-              });
-              animationFrameId = requestAnimationFrame(detect);
-              return;
-            }
-
-            // 3. Landmarks Analysis for Single Face
-            const keypoints = faces[0].keypoints as any[];
-            const nose = keypoints[1];
-            const leftEye = keypoints[33];
-            const rightEye = keypoints[263];
-
-            if (!nose || !leftEye || !rightEye) {
-              const msg = '⚠️ Face partially covered. Please keep full face visible.';
-              showWarning(msg, 'FACE_ABSENT');
-              dispatchViolation('FACE_ABSENT', msg, 'NEEDS_REVIEW');
-              animationFrameId = requestAnimationFrame(detect);
-              return;
-            }
-
-            // Horizontal head turn (yaw) ratio - highly sensitive to quick glances
-            const leftDist = Math.abs(nose.x - leftEye.x);
-            const rightDist = Math.abs(rightEye.x - nose.x);
-            const ratio = leftDist / (rightDist || 1);
-
-            // Vertical head pitch (up/down)
-            const centerY = video.videoHeight / 2;
-            const noseVerticalOffset = Math.abs(nose.y - centerY);
-            const topThreshold = video.videoHeight * 0.25;
-            const bottomThreshold = video.videoHeight * 0.75;
-            const isLookingUp = nose.y < topThreshold;
-            const isLookingDown = nose.y > bottomThreshold;
-
-            // Eye Gaze Tracking via Iris Landmarks (468: left iris, 473: right iris)
-            const leftIris = keypoints[468];
-            const rightIris = keypoints[473];
-            const leftEyeOuter = keypoints[33];
-            const leftEyeInner = keypoints[133];
-            const rightEyeInner = keypoints[362];
-            const rightEyeOuter = keypoints[263];
-
-            let eyeGazeWarning = '';
-            if (leftIris && rightIris && leftEyeOuter && leftEyeInner && rightEyeInner && rightEyeOuter) {
-              const leftEyeMinX = Math.min(leftEyeOuter.x, leftEyeInner.x);
-              const leftEyeMaxX = Math.max(leftEyeOuter.x, leftEyeInner.x);
-              const leftIrisRelative = (leftIris.x - leftEyeMinX) / ((leftEyeMaxX - leftEyeMinX) || 1);
-
-              const rightEyeMinX = Math.min(rightEyeInner.x, rightEyeOuter.x);
-              const rightEyeMaxX = Math.max(rightEyeInner.x, rightEyeOuter.x);
-              const rightIrisRelative = (rightIris.x - rightEyeMinX) / ((rightEyeMaxX - rightEyeMinX) || 1);
-
-              const leftEyeMinY = Math.min(keypoints[159]?.y || leftEyeOuter.y, keypoints[145]?.y || leftEyeOuter.y);
-              const leftEyeMaxY = Math.max(keypoints[159]?.y || leftEyeOuter.y, keypoints[145]?.y || leftEyeOuter.y);
-              const leftIrisVerticalRelative = (leftIris.y - leftEyeMinY) / ((leftEyeMaxY - leftEyeMinY) || 1);
-
-              // Sensitive thresholds (0.30) catch even subtle glances
-              const irisThresholdX = 0.30;
-              const irisThresholdY = 0.28;
-
-              if (leftIrisRelative < irisThresholdX || rightIrisRelative < irisThresholdX) {
-                eyeGazeWarning = 'eyes looking left';
-              } else if (leftIrisRelative > (1 - irisThresholdX) || rightIrisRelative > (1 - irisThresholdX)) {
-                eyeGazeWarning = 'eyes looking right';
-              } else if (leftIrisVerticalRelative < irisThresholdY) {
-                eyeGazeWarning = 'eyes looking up';
-              } else if (leftIrisVerticalRelative > (1 - irisThresholdY)) {
-                eyeGazeWarning = 'eyes looking down';
-              }
-            }
-
-            // Evaluate Head Movement & Gaze (Instant Trigger on 1st Frame)
-            if (ratio > 1.25 || ratio < 0.78) {
-              const msg = ratio > 1.25 ? '⚠️ Please look at screen (turned left)' : '⚠️ Please look at screen (turned right)';
-              showWarning(msg, 'GAZE_DEVIATION');
-              dispatchViolation('GAZE_DEVIATION', msg, 'NEEDS_REVIEW');
-              onTelemetryUpdate?.({
-                faces: 1,
-                gaze: 'away',
-                headPose: 'turned',
-                audio: isMultiVoiceActiveRef.current ? 'multiple_voices' : 'clean'
-              });
-            } else if (noseVerticalOffset > 60 || isLookingUp || isLookingDown) {
-              const msg = isLookingUp ? '⚠️ Looking up away from screen' : isLookingDown ? '⚠️ Looking down away from screen' : '⚠️ Please keep your head straight';
-              showWarning(msg, 'HEAD_TURN_PROLONGED');
-              dispatchViolation('HEAD_TURN_PROLONGED', msg, 'OBSERVED_EVENT');
-              onTelemetryUpdate?.({
-                faces: 1,
-                gaze: 'away',
-                headPose: 'turned',
-                audio: isMultiVoiceActiveRef.current ? 'multiple_voices' : 'clean'
-              });
-            } else if (eyeGazeWarning) {
-              const msg = `⚠️ Looking away: ${eyeGazeWarning}`;
-              showWarning(msg, 'GAZE_DEVIATION');
-              dispatchViolation('GAZE_DEVIATION', msg, 'NEEDS_REVIEW');
-              onTelemetryUpdate?.({
-                faces: 1,
-                gaze: 'away',
-                headPose: 'centered',
-                audio: isMultiVoiceActiveRef.current ? 'multiple_voices' : 'clean'
-              });
+              activeObservation = `Multiple Persons Detected (${faces.length})`;
+              triggerVisualWarning(`🚨 Multiple faces detected (${faces.length})`, 'MULTIPLE_PERSONS');
+              dispatchViolation('MULTIPLE_PERSONS', `Cheating alert: ${faces.length} faces in frame`, 'NEEDS_REVIEW_HIGH');
+            } else if (faces.length === 0) {
+              // 2. Face Absent Observation
+              activeObservation = 'Face Not Detected';
+              missReason = 'No face detected in video frame';
+              triggerVisualWarning('⚠️ Face not detected. Remain in frame.', 'FACE_ABSENT');
+              dispatchViolation('FACE_ABSENT', 'Candidate face out of camera view', 'NEEDS_REVIEW');
             } else {
-              // Clean frame: only clear warning once 1.5s visual hold timer expires
-              if (Date.now() > warningExpiryRef.current) {
-                if (warningType !== 'BACKGROUND_NOISE') {
-                  setWarning('');
-                  setWarningType('');
-                  lastWarningRef.current = '';
+              // 3. Single Face: Geometry Analysis
+              const keypoints = faces[0].keypoints as Keypoint3D[];
+              headPoseResult = estimateHeadPose(keypoints, calibrationRef.current);
+              eyeGazeResult = estimateEyeGaze(keypoints, headPoseResult, calibrationRef.current);
+
+              // Handle Neutral Calibration Sampling
+              if (isCalibratingRef.current) {
+                calibrationSamplesRef.current.push({
+                  yaw: headPoseResult.yaw,
+                  pitch: headPoseResult.pitch,
+                  roll: headPoseResult.roll,
+                  gazeX: eyeGazeResult.gazeX,
+                  gazeY: eyeGazeResult.gazeY
+                });
+                if (calibrationSamplesRef.current.length >= 15) {
+                  const n = calibrationSamplesRef.current.length;
+                  const avg = calibrationSamplesRef.current.reduce((acc, curr) => ({
+                    yaw: acc.yaw + curr.yaw,
+                    pitch: acc.pitch + curr.pitch,
+                    roll: acc.roll + curr.roll,
+                    gazeX: acc.gazeX + curr.gazeX,
+                    gazeY: acc.gazeY + curr.gazeY
+                  }), { yaw: 0, pitch: 0, roll: 0, gazeX: 0, gazeY: 0 });
+
+                  calibrationRef.current = {
+                    baselineYaw: avg.yaw / n,
+                    baselinePitch: avg.pitch / n,
+                    baselineRoll: avg.roll / n,
+                    baselineGazeX: avg.gazeX / n,
+                    baselineGazeY: avg.gazeY / n
+                  };
+                  isCalibratingRef.current = false;
+                  triggerVisualWarning('✓ Neutral pose calibrated successfully!', 'CALIBRATING');
                 }
               }
-              onTelemetryUpdate?.({
-                faces: 1,
-                gaze: 'focused',
-                headPose: 'centered',
-                audio: isMultiVoiceActiveRef.current ? 'multiple_voices' : 'clean'
+
+              // Evaluate Head Pose Direction
+              if (headPoseResult.direction === 'LEFT') {
+                activeObservation = `Head Turned Left (${headPoseResult.yaw}°)`;
+                triggerVisualWarning('⚠️ Please look directly at screen (Head Left)', 'HEAD_TURN');
+                dispatchViolation('HEAD_TURN_PROLONGED', `Head turned left: ${headPoseResult.yaw}°`, 'NEEDS_REVIEW');
+              } else if (headPoseResult.direction === 'RIGHT') {
+                activeObservation = `Head Turned Right (${headPoseResult.yaw}°)`;
+                triggerVisualWarning('⚠️ Please look directly at screen (Head Right)', 'HEAD_TURN');
+                dispatchViolation('HEAD_TURN_PROLONGED', `Head turned right: ${headPoseResult.yaw}°`, 'NEEDS_REVIEW');
+              } else if (headPoseResult.direction === 'UP') {
+                activeObservation = `Head Tilted Up (${headPoseResult.pitch}°)`;
+                triggerVisualWarning('⚠️ Please keep head straight (Head Up)', 'HEAD_TURN');
+                dispatchViolation('HEAD_TURN_PROLONGED', `Head tilted up: ${headPoseResult.pitch}°`, 'OBSERVED_EVENT');
+              } else if (headPoseResult.direction === 'DOWN') {
+                activeObservation = `Head Tilted Down (${headPoseResult.pitch}°)`;
+                triggerVisualWarning('⚠️ Please keep head straight (Head Down)', 'HEAD_TURN');
+                dispatchViolation('HEAD_TURN_PROLONGED', `Head tilted down: ${headPoseResult.pitch}°`, 'OBSERVED_EVENT');
+              } else if (eyeGazeResult.isBlinking) {
+                // Natural blink rejection
+                missReason = 'Natural eye blink (rejected as non-violation)';
+              } else if (eyeGazeResult.direction === 'LEFT') {
+                // Eye-Only Gaze Left
+                activeObservation = `Eye Gaze Left (X: ${eyeGazeResult.gazeX})`;
+                triggerVisualWarning('⚠️ Looking away: Eyes Left', 'GAZE_DEVIATION');
+                dispatchViolation('GAZE_DEVIATION', `Eyes looking left (iris offset: ${eyeGazeResult.gazeX})`, 'NEEDS_REVIEW');
+              } else if (eyeGazeResult.direction === 'RIGHT') {
+                // Eye-Only Gaze Right
+                activeObservation = `Eye Gaze Right (X: ${eyeGazeResult.gazeX})`;
+                triggerVisualWarning('⚠️ Looking away: Eyes Right', 'GAZE_DEVIATION');
+                dispatchViolation('GAZE_DEVIATION', `Eyes looking right (iris offset: ${eyeGazeResult.gazeX})`, 'NEEDS_REVIEW');
+              } else if (eyeGazeResult.direction === 'UP') {
+                // Eye-Only Gaze Up
+                activeObservation = `Eye Gaze Up (Y: ${eyeGazeResult.gazeY})`;
+                triggerVisualWarning('⚠️ Looking away: Eyes Up', 'GAZE_DEVIATION');
+                dispatchViolation('GAZE_DEVIATION', `Eyes looking up (iris offset: ${eyeGazeResult.gazeY})`, 'OBSERVED_EVENT');
+              } else if (eyeGazeResult.direction === 'DOWN') {
+                // Eye-Only Gaze Down
+                activeObservation = `Eye Gaze Down (Y: ${eyeGazeResult.gazeY})`;
+                triggerVisualWarning('⚠️ Looking away: Eyes Down', 'GAZE_DEVIATION');
+                dispatchViolation('GAZE_DEVIATION', `Eyes looking down (iris offset: ${eyeGazeResult.gazeY})`, 'OBSERVED_EVENT');
+              } else {
+                missReason = 'Face neutral and within acceptable center deadband';
+                // Clear warning once visual hold timer expires
+                if (Date.now() > warningExpiryRef.current) {
+                  setWarning('');
+                  setWarningType('');
+                }
+              }
+
+              // Optional Canvas Overlay Rendering
+              if (overlayEnabled && canvasRef.current && video) {
+                const canvas = canvasRef.current;
+                canvas.width = video.videoWidth || 640;
+                canvas.height = video.videoHeight || 480;
+                const ctx = canvas.getContext('2d');
+                if (ctx) {
+                  ctx.clearRect(0, 0, canvas.width, canvas.height);
+                  ctx.fillStyle = '#38bdf8';
+                  // Draw keypoints
+                  for (let i = 0; i < keypoints.length; i += 10) {
+                    ctx.beginPath();
+                    ctx.arc(keypoints[i].x, keypoints[i].y, 1.5, 0, 2 * Math.PI);
+                    ctx.fill();
+                  }
+                  // Draw iris points in distinct color
+                  ctx.fillStyle = '#f43f5e';
+                  if (keypoints[468]) {
+                    ctx.beginPath();
+                    ctx.arc(keypoints[468].x, keypoints[468].y, 3, 0, 2 * Math.PI);
+                    ctx.fill();
+                  }
+                  if (keypoints[473]) {
+                    ctx.beginPath();
+                    ctx.arc(keypoints[473].x, keypoints[473].y, 3, 0, 2 * Math.PI);
+                    ctx.fill();
+                  }
+                }
+              }
+            }
+
+            // SECTION 3: BOUNDED TELEMETRY & DIAGNOSTICS EMIT (5 Hz to prevent React churn)
+            if (now - lastTelemetryEmit > 200) {
+              lastTelemetryEmit = now;
+
+              // Calculate Camera FPS
+              const cTimes = cameraFrameTimesRef.current;
+              const camFps = cTimes.length > 1
+                ? (cTimes.length - 1) / ((cTimes[cTimes.length - 1] - cTimes[0]) / 1000)
+                : 0;
+
+              // Calculate Inference FPS
+              const iTimes = inferenceTimesRef.current;
+              const infFps = iTimes.length > 1
+                ? (iTimes.length - 1) / ((iTimes[iTimes.length - 1] - iTimes[0]) / 1000)
+                : 0;
+
+              // Compute P50 and P95 Latencies
+              const sorted = [...latencySamplesRef.current].sort((a, b) => a - b);
+              const p50 = sorted[Math.floor(sorted.length * 0.5)] || 0;
+              const p95 = sorted[Math.floor(sorted.length * 0.95)] || 0;
+
+              // Dispatch telemetry update to parent
+              onTelemetryRef.current?.({
+                faces: faces.length,
+                gaze: eyeGazeResult ? (eyeGazeResult.isBlinking ? 'blink' : eyeGazeResult.direction === 'CENTER' ? 'focused' : 'away') : 'unknown',
+                headPose: headPoseResult ? (headPoseResult.direction === 'CENTER' ? 'centered' : 'turned') : 'centered',
+                audio: 'clean',
+                yaw: headPoseResult?.yaw || 0,
+                pitch: headPoseResult?.pitch || 0,
+                roll: headPoseResult?.roll || 0,
+                gazeX: eyeGazeResult?.gazeX || 0,
+                gazeY: eyeGazeResult?.gazeY || 0
+              });
+
+              // Update Diagnostics Panel State
+              setDiagMetrics({
+                cameraFps: Math.min(60, camFps),
+                inferenceFps: Math.min(60, infFps),
+                latencyMs: latency,
+                p50LatencyMs: p50,
+                p95LatencyMs: p95,
+                droppedFrames: droppedFramesRef.current,
+                modelInitCount: modelInitCountRef.current,
+                lastAnalyzedAgeMs: Math.max(0, Date.now() - lastAnalyzedTimeRef.current),
+                modelReady: true,
+                activeFaceCount: faces.length,
+                headPose: headPoseResult,
+                eyeGaze: eyeGazeResult,
+                activeObservation,
+                missReason,
+                overlayEnabled,
+                calibrationActive: isCalibratingRef.current
               });
             }
-          } catch (detectionErr) {
-            console.warn('Face estimation error:', detectionErr);
+          } catch (err) {
+            console.warn('Frame processing exception:', err);
+          } finally {
+            isInferenceBusyRef.current = false;
+            scheduleNextFrame();
           }
-
-          animationFrameId = requestAnimationFrame(detect);
         };
 
-        detect();
+        // Frame scheduler using requestVideoFrameCallback when available
+        const scheduleNextFrame = () => {
+          if (isCancelled || !isMountedRef.current) return;
+          if (video && 'requestVideoFrameCallback' in video) {
+            videoCallbackHandle = (video as any).requestVideoFrameCallback(processFrame);
+          } else {
+            animFrameHandle = requestAnimationFrame(processFrame);
+          }
+        };
+
+        scheduleNextFrame();
       } catch (err) {
         console.error('AI Proctor init failed:', err);
+      } finally {
+        isInitializingRef.current = false;
       }
     };
 
-    start();
+    void initDetectorAndLoop();
 
+    // SECTION 4: ROBUST CLEANUP (Effect owns all resources)
     return () => {
-      running = false;
-      cancelAnimationFrame(animationFrameId);
-      if (detector && typeof detector.dispose === 'function') {
-        detector.dispose();
+      isCancelled = true;
+      isMountedRef.current = false;
+
+      if (videoCallbackHandle !== null && videoRef.current && 'cancelVideoFrameCallback' in videoRef.current) {
+        (videoRef.current as any).cancelVideoFrameCallback(videoCallbackHandle);
+      }
+      if (animFrameHandle !== null) {
+        cancelAnimationFrame(animFrameHandle);
+      }
+      if (audioCheckInterval) {
+        clearInterval(audioCheckInterval);
       }
       if (audioContext) {
         audioContext.close().catch(() => {});
       }
+      if (detectorRef.current) {
+        detectorRef.current.dispose?.();
+        detectorRef.current = null;
+      }
     };
-  }, [mediaStream, dispatchViolation, onTelemetryUpdate, warningType]);
+  }, [mediaStream?.id]); // DEPENDS ONLY ON STREAM LIFECYCLE! Never on warning or callbacks!
 
   return (
     <>
-      {/* Hidden dedicated high-performance video capture element */}
+      {/* Hidden processing video element */}
       <video
         ref={videoRef}
-        width={640}
-        height={480}
         muted
         playsInline
         autoPlay
         style={{ display: 'none' }}
       />
 
-      {/* Prominent High-Contrast Real-time Warning Banner (Reference Styling) */}
+      {/* Optional Debugging Canvas Overlay */}
+      {overlayEnabled && (
+        <canvas
+          ref={canvasRef}
+          style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            width: '100%',
+            height: '100%',
+            pointerEvents: 'none',
+            zIndex: 20
+          }}
+        />
+      )}
+
+      {/* Immediate Visual Warning Alert (Tier A: Human Observation Aid) */}
       {warning && (
         <div
           style={{
             position: 'fixed',
             top: 24,
             right: 24,
-            padding: '16px 24px',
+            padding: '14px 22px',
             background: warningType === 'MULTIPLE_PERSONS' ? '#dc2626' : warningType === 'BACKGROUND_NOISE' ? '#ea580c' : '#b91c1c',
             color: '#ffffff',
-            fontSize: 16,
+            fontSize: 15,
             fontWeight: 700,
             borderRadius: 12,
             zIndex: 99999,
@@ -397,20 +554,28 @@ export default function AIProctorEngine({
             display: 'flex',
             alignItems: 'center',
             gap: 12,
-            animation: 'fadeIn 0.2s ease-in-out'
+            animation: 'fadeIn 0.15s ease-in-out'
           }}
         >
-          <span style={{ fontSize: 24, lineHeight: 1 }}>
-            {warningType === 'MULTIPLE_PERSONS' ? '🚨' : '⚠️'}
+          <span style={{ fontSize: 22, lineHeight: 1 }}>
+            {warningType === 'MULTIPLE_PERSONS' ? '🚨' : warningType === 'CALIBRATING' ? '🎯' : '⚠️'}
           </span>
           <div style={{ display: 'flex', flexDirection: 'column' }}>
-            <span style={{ textTransform: 'uppercase', fontSize: 11, letterSpacing: '0.08em', opacity: 0.9 }}>
-              {warningType === 'MULTIPLE_PERSONS' ? 'Integrity Violation' : 'Proctoring Warning'}
+            <span style={{ textTransform: 'uppercase', fontSize: 10, letterSpacing: '0.08em', opacity: 0.9 }}>
+              {warningType === 'MULTIPLE_PERSONS' ? 'Integrity Flag' : warningType === 'CALIBRATING' ? 'Calibration' : 'Proctoring Alert'}
             </span>
-            <span style={{ fontSize: 15, fontWeight: 600, marginTop: 2 }}>{warning}</span>
+            <span style={{ fontSize: 14, fontWeight: 600, marginTop: 2 }}>{warning}</span>
           </div>
         </div>
       )}
+
+      {/* Developer Diagnostics HUD */}
+      <ProctorDiagnostics
+        metrics={diagMetrics}
+        onToggleOverlay={(enabled) => setOverlayEnabled(enabled)}
+        onCalibrate={triggerCalibration}
+        onResetCalibration={resetCalibration}
+      />
     </>
   );
 }
