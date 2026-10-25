@@ -29,12 +29,21 @@ export default function AIProctorEngine({
   const [engineReady, setEngineReady] = useState(false);
 
   const lastWarningRef = useRef<string>('');
+  const warningExpiryRef = useRef<number>(0);
   const lastViolationDispatchRef = useRef<Map<string, number>>(new Map());
   const multiFaceFramesRef = useRef<number>(0);
   const noFaceFramesRef = useRef<number>(0);
   const gazeAwayFramesRef = useRef<number>(0);
   const lastMultiVoiceTimeRef = useRef<number>(0);
   const isMultiVoiceActiveRef = useRef<boolean>(false);
+
+  // Instant warning display with 1.5s visual persistence so quick glances are visibly captured
+  const showWarning = useCallback((msg: string, type: string) => {
+    setWarning(msg);
+    setWarningType(type);
+    lastWarningRef.current = msg;
+    warningExpiryRef.current = Date.now() + 1500;
+  }, []);
 
   // Helper to capture base64 snapshot from current video frame
   const captureSnapshot = useCallback((): string => {
@@ -162,7 +171,7 @@ export default function AIProctorEngine({
         setEngineReady(true);
 
         let lastRun = 0;
-        const TARGET_FPS = 10; // 10 FPS for instantaneous reaction without GPU lag
+        const TARGET_FPS = 15; // 15 FPS for ultra-responsive sub-70ms reaction time
 
         const detect = async () => {
           if (!running) return;
@@ -182,14 +191,12 @@ export default function AIProctorEngine({
           try {
             const faces = await detector.estimateFaces(video);
 
-            // 1. Face Absence Detection
+            // 1. Face Absence Detection (Immediate)
             if (faces.length === 0) {
               noFaceFramesRef.current++;
-              if (noFaceFramesRef.current >= 3) {
+              if (noFaceFramesRef.current >= 2) {
                 const msg = '⚠️ Face not detected. Please stay in camera view.';
-                setWarning(msg);
-                setWarningType('FACE_ABSENT');
-                lastWarningRef.current = msg;
+                showWarning(msg, 'FACE_ABSENT');
                 dispatchViolation('FACE_ABSENT', msg, 'NEEDS_REVIEW');
                 onTelemetryUpdate?.({
                   faces: 0,
@@ -204,26 +211,19 @@ export default function AIProctorEngine({
               noFaceFramesRef.current = 0;
             }
 
-            // 2. Multiple Faces Detection (Instant Catch - 2 consecutive frames ~200ms)
+            // 2. Multiple Faces Detection (Instant 1-Frame Catch)
             if (faces.length > 1) {
-              multiFaceFramesRef.current++;
-              if (multiFaceFramesRef.current >= 2) {
-                const msg = `🚨 Cheating Alert: Multiple faces detected (${faces.length})`;
-                setWarning(msg);
-                setWarningType('MULTIPLE_PERSONS');
-                lastWarningRef.current = msg;
-                dispatchViolation('MULTIPLE_PERSONS', msg, 'NEEDS_REVIEW_HIGH');
-                onTelemetryUpdate?.({
-                  faces: faces.length,
-                  gaze: 'focused',
-                  headPose: 'centered',
-                  audio: isMultiVoiceActiveRef.current ? 'multiple_voices' : 'clean'
-                });
-              }
+              const msg = `🚨 Cheating Alert: Multiple faces detected (${faces.length})`;
+              showWarning(msg, 'MULTIPLE_PERSONS');
+              dispatchViolation('MULTIPLE_PERSONS', msg, 'NEEDS_REVIEW_HIGH');
+              onTelemetryUpdate?.({
+                faces: faces.length,
+                gaze: 'focused',
+                headPose: 'centered',
+                audio: isMultiVoiceActiveRef.current ? 'multiple_voices' : 'clean'
+              });
               animationFrameId = requestAnimationFrame(detect);
               return;
-            } else {
-              multiFaceFramesRef.current = 0;
             }
 
             // 3. Landmarks Analysis for Single Face
@@ -234,15 +234,13 @@ export default function AIProctorEngine({
 
             if (!nose || !leftEye || !rightEye) {
               const msg = '⚠️ Face partially covered. Please keep full face visible.';
-              setWarning(msg);
-              setWarningType('FACE_ABSENT');
-              lastWarningRef.current = msg;
+              showWarning(msg, 'FACE_ABSENT');
               dispatchViolation('FACE_ABSENT', msg, 'NEEDS_REVIEW');
               animationFrameId = requestAnimationFrame(detect);
               return;
             }
 
-            // Horizontal head turn (yaw) ratio
+            // Horizontal head turn (yaw) ratio - highly sensitive to quick glances
             const leftDist = Math.abs(nose.x - leftEye.x);
             const rightDist = Math.abs(rightEye.x - nose.x);
             const ratio = leftDist / (rightDist || 1);
@@ -250,8 +248,8 @@ export default function AIProctorEngine({
             // Vertical head pitch (up/down)
             const centerY = video.videoHeight / 2;
             const noseVerticalOffset = Math.abs(nose.y - centerY);
-            const topThreshold = video.videoHeight * 0.22;
-            const bottomThreshold = video.videoHeight * 0.78;
+            const topThreshold = video.videoHeight * 0.25;
+            const bottomThreshold = video.videoHeight * 0.75;
             const isLookingUp = nose.y < topThreshold;
             const isLookingDown = nose.y > bottomThreshold;
 
@@ -277,8 +275,9 @@ export default function AIProctorEngine({
               const leftEyeMaxY = Math.max(keypoints[159]?.y || leftEyeOuter.y, keypoints[145]?.y || leftEyeOuter.y);
               const leftIrisVerticalRelative = (leftIris.y - leftEyeMinY) / ((leftEyeMaxY - leftEyeMinY) || 1);
 
-              const irisThresholdX = 0.22;
-              const irisThresholdY = 0.25;
+              // Sensitive thresholds (0.30) catch even subtle glances
+              const irisThresholdX = 0.30;
+              const irisThresholdY = 0.28;
 
               if (leftIrisRelative < irisThresholdX || rightIrisRelative < irisThresholdX) {
                 eyeGazeWarning = 'eyes looking left';
@@ -291,27 +290,20 @@ export default function AIProctorEngine({
               }
             }
 
-            // Evaluate Head Movement & Gaze
-            if (ratio > 1.38 || ratio < 0.72) {
-              gazeAwayFramesRef.current++;
-              if (gazeAwayFramesRef.current >= 2) {
-                const msg = '⚠️ Please look directly at the screen';
-                setWarning(msg);
-                setWarningType('GAZE_DEVIATION');
-                lastWarningRef.current = msg;
-                dispatchViolation('GAZE_DEVIATION', msg, 'NEEDS_REVIEW');
-                onTelemetryUpdate?.({
-                  faces: 1,
-                  gaze: 'away',
-                  headPose: 'turned',
-                  audio: isMultiVoiceActiveRef.current ? 'multiple_voices' : 'clean'
-                });
-              }
-            } else if (noseVerticalOffset > 75 || isLookingUp || isLookingDown) {
-              const msg = '⚠️ Please keep your head straight';
-              setWarning(msg);
-              setWarningType('HEAD_TURN_PROLONGED');
-              lastWarningRef.current = msg;
+            // Evaluate Head Movement & Gaze (Instant Trigger on 1st Frame)
+            if (ratio > 1.25 || ratio < 0.78) {
+              const msg = ratio > 1.25 ? '⚠️ Please look at screen (turned left)' : '⚠️ Please look at screen (turned right)';
+              showWarning(msg, 'GAZE_DEVIATION');
+              dispatchViolation('GAZE_DEVIATION', msg, 'NEEDS_REVIEW');
+              onTelemetryUpdate?.({
+                faces: 1,
+                gaze: 'away',
+                headPose: 'turned',
+                audio: isMultiVoiceActiveRef.current ? 'multiple_voices' : 'clean'
+              });
+            } else if (noseVerticalOffset > 60 || isLookingUp || isLookingDown) {
+              const msg = isLookingUp ? '⚠️ Looking up away from screen' : isLookingDown ? '⚠️ Looking down away from screen' : '⚠️ Please keep your head straight';
+              showWarning(msg, 'HEAD_TURN_PROLONGED');
               dispatchViolation('HEAD_TURN_PROLONGED', msg, 'OBSERVED_EVENT');
               onTelemetryUpdate?.({
                 faces: 1,
@@ -320,27 +312,23 @@ export default function AIProctorEngine({
                 audio: isMultiVoiceActiveRef.current ? 'multiple_voices' : 'clean'
               });
             } else if (eyeGazeWarning) {
-              gazeAwayFramesRef.current++;
-              if (gazeAwayFramesRef.current >= 2) {
-                const msg = `⚠️ Looking away: ${eyeGazeWarning}`;
-                setWarning(msg);
-                setWarningType('GAZE_DEVIATION');
-                lastWarningRef.current = msg;
-                dispatchViolation('GAZE_DEVIATION', msg, 'NEEDS_REVIEW');
-                onTelemetryUpdate?.({
-                  faces: 1,
-                  gaze: 'away',
-                  headPose: 'centered',
-                  audio: isMultiVoiceActiveRef.current ? 'multiple_voices' : 'clean'
-                });
-              }
+              const msg = `⚠️ Looking away: ${eyeGazeWarning}`;
+              showWarning(msg, 'GAZE_DEVIATION');
+              dispatchViolation('GAZE_DEVIATION', msg, 'NEEDS_REVIEW');
+              onTelemetryUpdate?.({
+                faces: 1,
+                gaze: 'away',
+                headPose: 'centered',
+                audio: isMultiVoiceActiveRef.current ? 'multiple_voices' : 'clean'
+              });
             } else {
-              // Completely clean frame
-              gazeAwayFramesRef.current = 0;
-              if (warningType !== 'BACKGROUND_NOISE') {
-                setWarning('');
-                setWarningType('');
-                lastWarningRef.current = '';
+              // Clean frame: only clear warning once 1.5s visual hold timer expires
+              if (Date.now() > warningExpiryRef.current) {
+                if (warningType !== 'BACKGROUND_NOISE') {
+                  setWarning('');
+                  setWarningType('');
+                  lastWarningRef.current = '';
+                }
               }
               onTelemetryUpdate?.({
                 faces: 1,
