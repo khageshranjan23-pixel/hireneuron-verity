@@ -16,6 +16,8 @@ import {
   Volume2,
   VolumeX
 } from 'lucide-react';
+import BrowserProctor from './BrowserProctor';
+import AIProctorEngine from './AIProctorEngine';
 
 export default function MediaRoom({
   sid,
@@ -49,6 +51,10 @@ export default function MediaRoom({
   const [faceStatus, setFaceStatus] = useState<'normal' | 'multiple' | 'absent' | 'cropped'>('normal');
   const [audioStatus, setAudioStatus] = useState<'clean' | 'noisy'>('clean');
 
+  // Node references for AIProctorEngine
+  const [localMediaStream, setLocalMediaStream] = useState<MediaStream | null>(null);
+  const [localVideoNode, setLocalVideoNode] = useState<HTMLVideoElement | null>(null);
+
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
 
@@ -67,8 +73,6 @@ export default function MediaRoom({
     let localStream: MediaStream | null = null;
     let audioContext: AudioContext | null = null;
     let animationId: number | null = null;
-    let cvIntervalId: any = null;
-    let audioMonitorIntervalId: any = null;
     const room = new Room();
     const nodes = new Map<string, HTMLElement>();
 
@@ -137,7 +141,7 @@ export default function MediaRoom({
     room.on(RoomEvent.Reconnected, () => setStatus('Media reconnected'));
     room.on(RoomEvent.Disconnected, () => setStatus('Media disconnected'));
 
-    // Real-time data channel messages (captions + proctoring alerts)
+    // Real-time data channel messages (captions + proctoring alerts from workers)
     room.on(RoomEvent.DataReceived, (payload: Uint8Array) => {
       try {
         const decoded = new TextDecoder().decode(payload);
@@ -188,6 +192,8 @@ export default function MediaRoom({
             return;
           }
 
+          setLocalMediaStream(localStream);
+
           onDeviceStatus?.({
             camera: localStream.getVideoTracks().length > 0,
             mic: localStream.getAudioTracks().length > 0
@@ -209,6 +215,8 @@ export default function MediaRoom({
             localVideoEl.srcObject = new MediaStream([videoTrack]);
             void localVideoEl.play().catch(() => {});
 
+            setLocalVideoNode(localVideoEl);
+
             const wrapper = document.createElement('div');
             wrapper.className = 'feedWrapper localFeed';
             const badge = document.createElement('div');
@@ -220,168 +228,9 @@ export default function MediaRoom({
             wrapper.appendChild(localVideoEl);
             host.current?.appendChild(wrapper);
             nodes.set('local-video', wrapper);
-
-            // High-Accuracy Client-Side Computer Vision Engine
-            if (!phone) {
-              const canvas = document.createElement('canvas');
-              canvas.width = 160;
-              canvas.height = 120;
-              const ctx = canvas.getContext('2d', { willReadFrequently: true });
-              let prevPixels: Uint8ClampedArray | null = null;
-              let consecutiveMotionTicks = 0;
-              let consecutiveBlankTicks = 0;
-              let consecutiveGazeAwayTicks = 0;
-
-              // Fast cadence check every 350ms
-              cvIntervalId = setInterval(async () => {
-                if (closed || !localVideoEl || localVideoEl.readyState < 2 || !ctx) return;
-                try {
-                  ctx.drawImage(localVideoEl, 0, 0, 160, 120);
-                  const imgData = ctx.getImageData(0, 0, 160, 120);
-                  const pixels = imgData.data;
-
-                  // 1. Motion & Frisking / Sudden Movement Detection
-                  if (prevPixels) {
-                    let diffSum = 0;
-                    for (let i = 0; i < pixels.length; i += 4) {
-                      const d = Math.abs(pixels[i] - prevPixels[i]);
-                      diffSum += d;
-                    }
-                    const avgDiff = diffSum / (pixels.length / 4);
-                    setMotionLevel(Math.min(100, Math.round(avgDiff * 3)));
-
-                    if (avgDiff > 28) {
-                      consecutiveMotionTicks++;
-                      if (consecutiveMotionTicks >= 2) {
-                        triggerAlert(
-                          'EXCESSIVE_MOVEMENT',
-                          '⚠️ Rapid Movement / Frisking Activity Detected!',
-                          'NEEDS_REVIEW'
-                        );
-                      }
-                    } else {
-                      consecutiveMotionTicks = Math.max(0, consecutiveMotionTicks - 1);
-                    }
-                  }
-                  prevPixels = new Uint8ClampedArray(pixels);
-
-                  // 2. Hardware Face Detection (Chromium Shape Detection API)
-                  let faceDetectedWithHardware = false;
-                  if (typeof (window as any).FaceDetector !== 'undefined') {
-                    try {
-                      const detector = new (window as any).FaceDetector({ fastMode: true, maxDetectedFaces: 5 });
-                      const faces = await detector.detect(localVideoEl);
-                      faceDetectedWithHardware = true;
-
-                      if (faces.length >= 2) {
-                        setFaceStatus('multiple');
-                        triggerAlert(
-                          'MULTIPLE_PERSONS',
-                          `🚨 CHEATING ALERT: ${faces.length} Persons Detected in Frame!`,
-                          'NEEDS_REVIEW_HIGH'
-                        );
-                      } else if (faces.length === 1) {
-                        const f = faces[0];
-                        const box = f.boundingBox;
-
-                        // Check face boundary cropping (is face fully in frame?)
-                        if (box.top < 4 || box.left < 4 || box.right > localVideoEl.videoWidth - 4 || box.bottom > localVideoEl.videoHeight - 4) {
-                          setFaceStatus('cropped');
-                        } else {
-                          setFaceStatus('normal');
-                        }
-
-                        // Check eye/gaze landmarks if available
-                        if (f.landmarks && f.landmarks.length >= 3) {
-                          const eyes = f.landmarks.filter((l: any) => l.type === 'eye');
-                          const nose = f.landmarks.find((l: any) => l.type === 'nose');
-                          if (eyes.length === 2 && nose) {
-                            const eyeMidX = (eyes[0].location.x + eyes[1].location.x) / 2;
-                            const eyeSpan = Math.abs(eyes[1].location.x - eyes[0].location.x);
-                            const skew = Math.abs(nose.location.x - eyeMidX) / (eyeSpan + 1e-4);
-
-                            if (skew > 0.35) {
-                              consecutiveGazeAwayTicks++;
-                              if (consecutiveGazeAwayTicks >= 3) {
-                                setGazeStatus('away');
-                                triggerAlert(
-                                  'GAZE_DEVIATION',
-                                  '⚠️ Gaze Diverted: Looking Away from Screen',
-                                  'NEEDS_REVIEW'
-                                );
-                              }
-                            } else {
-                              consecutiveGazeAwayTicks = 0;
-                              setGazeStatus('focused');
-                            }
-                          }
-                        }
-                      } else {
-                        consecutiveBlankTicks++;
-                        if (consecutiveBlankTicks >= 5) {
-                          setFaceStatus('absent');
-                          triggerAlert(
-                            'FACE_ABSENT',
-                            '⚠️ Face Absent: Candidate Left Camera View',
-                            'NEEDS_REVIEW'
-                          );
-                        }
-                      }
-                    } catch (_) {}
-                  }
-
-                  // 3. Robust Skin-Tone Spatial Clustering Fallback
-                  if (!faceDetectedWithHardware) {
-                    let skinPixelCount = 0;
-                    let leftClusterCount = 0;
-                    let rightClusterCount = 0;
-
-                    for (let y = 0; y < 120; y++) {
-                      for (let x = 0; x < 160; x++) {
-                        const idx = (y * 160 + x) * 4;
-                        const r = pixels[idx];
-                        const g = pixels[idx + 1];
-                        const b = pixels[idx + 2];
-
-                        // Standard skin luminance condition
-                        if (r > 95 && g > 40 && b > 20 && (r - g) > 15 && (r - b) > 15 && r > g && r > b) {
-                          skinPixelCount++;
-                          if (x < 70) leftClusterCount++;
-                          else if (x > 90) rightClusterCount++;
-                        }
-                      }
-                    }
-
-                    // Dual prominent skin clusters separated by gap = 2 persons in frame
-                    if (leftClusterCount > 400 && rightClusterCount > 400) {
-                      setFaceStatus('multiple');
-                      triggerAlert(
-                        'MULTIPLE_PERSONS',
-                        '🚨 CHEATING ALERT: 2 Persons Detected in Frame!',
-                        'NEEDS_REVIEW_HIGH'
-                      );
-                    } else if (skinPixelCount < 120) {
-                      consecutiveBlankTicks++;
-                      if (consecutiveBlankTicks >= 6) {
-                        setFaceStatus('absent');
-                        triggerAlert(
-                          'FACE_ABSENT',
-                          '⚠️ Face Absent: Candidate Left Camera View',
-                          'NEEDS_REVIEW'
-                        );
-                      }
-                    } else {
-                      consecutiveBlankTicks = 0;
-                      setFaceStatus('normal');
-                      setGazeStatus('focused');
-                    }
-                  }
-                } catch (_) {}
-              }, 350);
-            }
           }
 
-          // Audio Meter & Background Noise Analysis
+          // Audio Meter
           const audioTrack = localStream.getAudioTracks()[0];
           if (audioTrack && typeof window !== 'undefined') {
             try {
@@ -396,38 +245,16 @@ export default function MediaRoom({
               source.connect(analyser);
               const dataArray = new Uint8Array(analyser.frequencyBinCount);
 
-              let consecutiveNoiseTicks = 0;
-
               const checkLevel = () => {
                 if (closed) return;
                 analyser.getByteFrequencyData(dataArray);
                 let sum = 0;
-                let highBandSum = 0;
-
                 for (let i = 0; i < dataArray.length; i++) {
                   sum += dataArray[i];
-                  if (i > 10) highBandSum += dataArray[i];
                 }
                 const avg = sum / dataArray.length;
                 const normalized = Math.min(100, Math.round((avg / 128) * 100));
                 onVolume?.(normalized);
-
-                // High sustained audio energy in speech bands -> background noise alert
-                if (normalized > 32) {
-                  consecutiveNoiseTicks++;
-                  if (consecutiveNoiseTicks > 12) {
-                    setAudioStatus('noisy');
-                    triggerAlert(
-                      'BACKGROUND_NOISE',
-                      '⚠️ High Ambient Noise / Secondary Voice Detected',
-                      'OBSERVED_EVENT'
-                    );
-                  }
-                } else {
-                  consecutiveNoiseTicks = Math.max(0, consecutiveNoiseTicks - 1);
-                  if (consecutiveNoiseTicks === 0) setAudioStatus('clean');
-                }
-
                 animationId = requestAnimationFrame(checkLevel);
               };
               checkLevel();
@@ -505,8 +332,6 @@ export default function MediaRoom({
     // Cleanup on unmount
     return () => {
       closed = true;
-      if (cvIntervalId) clearInterval(cvIntervalId);
-      if (audioMonitorIntervalId) clearInterval(audioMonitorIntervalId);
       if (animationId) cancelAnimationFrame(animationId);
       if (audioContext && audioContext.state !== 'closed') {
         void audioContext.close();
@@ -547,6 +372,65 @@ export default function MediaRoom({
           </div>
         )}
       </div>
+
+      {/* Embedded High-Precision AI Proctoring & Browser Violation Watchdog */}
+      {!phone && !viewer && (
+        <>
+          <BrowserProctor
+            onViolation={(msg, severity) => {
+              triggerAlert('BROWSER_VIOLATION', msg, severity);
+              void api(`/sessions/${sid}/events`, token, 'POST', {
+                role: 'primary',
+                type: 'BROWSER_NAVIGATION',
+                severity,
+                jpeg_b64: '',
+                algorithm: 'browser-proctor-fullscreen-v1',
+                frame_count: 1,
+                start: Date.now() / 1000,
+                end: Date.now() / 1000
+              }).catch(() => {});
+            }}
+          />
+
+          <AIProctorEngine
+            videoElement={localVideoNode}
+            mediaStream={localMediaStream}
+            onViolation={(type, msg, severity) => {
+              triggerAlert(type, msg, severity);
+              // Take snapshot canvas frame and send to backend
+              try {
+                if (localVideoNode) {
+                  const canvas = document.createElement('canvas');
+                  canvas.width = 320;
+                  canvas.height = 240;
+                  const ctx = canvas.getContext('2d');
+                  if (ctx) {
+                    ctx.drawImage(localVideoNode, 0, 0, 320, 240);
+                    const b64 = canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
+                    if (b64) {
+                      void api(`/sessions/${sid}/events`, token, 'POST', {
+                        role: 'primary',
+                        type,
+                        severity,
+                        jpeg_b64: b64,
+                        algorithm: 'client-tfjs-facemesh-v1',
+                        frame_count: 1,
+                        start: Date.now() / 1000,
+                        end: Date.now() / 1000
+                      }).catch(() => {});
+                    }
+                  }
+                }
+              } catch (_) {}
+            }}
+            onTelemetryUpdate={(metrics) => {
+              setFaceStatus(metrics.faces === 0 ? 'absent' : metrics.faces > 1 ? 'multiple' : 'normal');
+              setGazeStatus(metrics.gaze);
+              setAudioStatus(metrics.audio === 'clean' ? 'clean' : 'noisy');
+            }}
+          />
+        </>
+      )}
 
       {/* Real-time On-Screen Proctoring HUD Alert Overlay */}
       {!phone && !viewer && (
