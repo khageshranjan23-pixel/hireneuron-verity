@@ -162,7 +162,11 @@ export default function MediaRoom({
     let localStream: MediaStream | null = null;
     let audioContext: AudioContext | null = null;
     let animationId: number | null = null;
-    const room = new Room();
+    const room = new Room({
+      autoSubscribe: !phone,
+      adaptiveStream: true,
+      dynacast: true
+    });
     const nodes = new Map<string, HTMLElement>();
 
     // 1. Remote track handling (e.g. secondary phone camera or remote feeds)
@@ -186,6 +190,11 @@ export default function MediaRoom({
       el.playsInline = true;
       el.setAttribute('playsinline', 'true');
       el.setAttribute('webkit-playsinline', 'true');
+      el.style.width = '100%';
+      el.style.height = '100%';
+      el.style.objectFit = 'cover';
+      el.style.display = 'block';
+      void el.play().catch(() => {});
 
       const wrapper = document.createElement('div');
       wrapper.className = 'feedWrapper remoteFeed ' + (isPhone ? 'phoneFeedWrapper' : '');
@@ -409,7 +418,9 @@ export default function MediaRoom({
       try {
         const creds = await api(`/sessions/${sid}/media`, token, 'POST');
         if (closed) return;
-        await room.connect(creds.url, creds.token);
+        await room.connect(creds.url, creds.token, {
+          autoSubscribe: !phone
+        });
         if (closed) {
           await room.disconnect();
           return;
@@ -438,7 +449,7 @@ export default function MediaRoom({
                 name: phone ? 'secondary' : 'camera',
                 source: Track.Source.Camera
               });
-            } else if (track.kind === 'audio') {
+            } else if (track.kind === 'audio' && !phone) {
               const lat = new LocalAudioTrack(track);
               await room.localParticipant.publishTrack(lat, {
                 name: 'microphone',
@@ -455,7 +466,9 @@ export default function MediaRoom({
             ? 'Live inspection feeds connected'
             : 'Media connected · AI proctoring active'
         );
-        await room.startAudio();
+        if (!phone) {
+          await room.startAudio().catch(() => {});
+        }
       } catch (err) {
         setStatus(`Connected locally (${(err as Error).message})`);
       }

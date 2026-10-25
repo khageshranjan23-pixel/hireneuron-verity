@@ -35,9 +35,11 @@ export default function PhonePairingPage() {
 
   useEffect(() => {
     if (!creds) return;
+    let failCount = 0;
     const timer = setInterval(() => {
       void api(`/sessions/${creds.session_id}/phone-status`, creds.token)
         .then((r) => {
+          failCount = 0;
           if (!r.active) {
             setCreds(null);
             sessionStorage.removeItem('verity_phone');
@@ -45,9 +47,12 @@ export default function PhonePairingPage() {
           }
         })
         .catch(() => {
-          setCreds(null);
-          sessionStorage.removeItem('verity_phone');
-          setError('Session ended or camera disconnected. Please scan QR code again if required.');
+          failCount++;
+          if (failCount >= 4) {
+            setCreds(null);
+            sessionStorage.removeItem('verity_phone');
+            setError('Session ended or disconnected. Please scan QR code again if required.');
+          }
         });
     }, 4000);
     return () => clearInterval(timer);
