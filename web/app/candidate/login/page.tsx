@@ -1,8 +1,8 @@
 'use client';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { ShieldCheck, Users, Lock, ArrowRight, AlertCircle, Eye, EyeOff, HelpCircle } from 'lucide-react';
+import { ShieldCheck, Users, Lock, ArrowRight, AlertCircle, Eye, EyeOff, HelpCircle, Zap, Sparkles } from 'lucide-react';
 import { api } from '@/components/api';
 
 export default function CandidateLoginPage() {
@@ -18,6 +18,15 @@ export default function CandidateLoginPage() {
     setPassword('RTPLCandidate2026!');
     setError('');
   };
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const p = new URLSearchParams(window.location.search);
+      if (p.get('trial') === 'true' || p.get('trial') === '1' || p.get('demo') === '1') {
+        fillTrialCredentials();
+      }
+    }
+  }, []);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();

@@ -2325,3 +2325,951 @@
 .btnOverrideSmall:hover {
   background: #f1f5f9;
 }
+
+/* ==========================================================================
+   LEVEL 1 MILLION ULTRA-PREMIUM ENTERPRISE DESIGN SYSTEM UPGRADE
+   Inspired by Vercel, Linear, and Stripe for RTPL HireNeuron Verity
+   ========================================================================== */
+
+:root {
+  --rtpl-glow-indigo: rgba(99, 102, 241, 0.18);
+  --rtpl-glow-cyan: rgba(6, 182, 212, 0.16);
+  --rtpl-glow-emerald: rgba(34, 197, 94, 0.20);
+  --rtpl-card-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.04), 0 10px 25px -5px rgba(0, 0, 0, 0.05), 0 8px 10px -6px rgba(0, 0, 0, 0.02);
+  --rtpl-card-hover: 0 20px 30px -10px rgba(79, 70, 229, 0.12), 0 0 0 1px rgba(99, 102, 241, 0.3);
+}
+
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif !important;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: radial-gradient(circle at 15% 15%, rgba(99, 102, 241, 0.035) 0%, transparent 40%),
+              radial-gradient(circle at 85% 85%, rgba(6, 182, 212, 0.035) 0%, transparent 40%),
+              #f8fafc !important;
+  color: #0f172a;
+}
+
+/* 2. Glassmorphic Hero Banner & Interactive Cards */
+.heroSection {
+  position: relative;
+  overflow: hidden;
+  background: radial-gradient(ellipse 80% 60% at 50% -20%, rgba(99, 102, 241, 0.15), transparent),
+              radial-gradient(circle at 80% 20%, rgba(6, 182, 212, 0.1), transparent 50%),
+              linear-gradient(180deg, #ffffff 0%, #f8fafc 100%) !important;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.8) !important;
+}
+
+.heroTag {
+  background: rgba(238, 242, 255, 0.85) !important;
+  backdrop-filter: blur(12px) !important;
+  border: 1px solid rgba(199, 210, 254, 0.8) !important;
+  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.12) !important;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.heroTag:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px rgba(99, 102, 241, 0.18) !important;
+}
+
+.heroTitle {
+  font-size: 48px !important;
+  font-weight: 900 !important;
+  letter-spacing: -1.5px !important;
+  line-height: 1.15 !important;
+  margin-bottom: 20px !important;
+  color: #0f172a !important;
+}
+
+.heroHighlight {
+  background: linear-gradient(135deg, #4338ca 0%, #6366f1 50%, #06b6d4 100%) !important;
+  -webkit-background-clip: text !important;
+  -webkit-text-fill-color: transparent !important;
+  filter: drop-shadow(0 2px 8px rgba(99, 102, 241, 0.2));
+}
+
+.heroDescription {
+  font-size: 16px !important;
+  line-height: 1.7 !important;
+  color: #475569 !important;
+  max-width: 760px !important;
+  margin: 0 auto 40px !important;
+}
+
+/* 3. Next-Gen Elevated Portal Cards */
+.portalCard {
+  background: rgba(255, 255, 255, 0.95) !important;
+  backdrop-filter: blur(16px) !important;
+  border: 1px solid rgba(226, 232, 240, 0.8) !important;
+  border-radius: 20px !important;
+  padding: 36px 32px !important;
+  box-shadow: var(--rtpl-card-shadow) !important;
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1) !important;
+  position: relative;
+  overflow: hidden;
+}
+
+.portalCard::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 20px;
+  padding: 1px;
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.4), transparent 60%);
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}
+
+.portalCard:hover {
+  transform: translateY(-6px) !important;
+  box-shadow: var(--rtpl-card-hover) !important;
+  border-color: rgba(99, 102, 241, 0.4) !important;
+}
+
+.portalIcon {
+  width: 56px !important;
+  height: 56px !important;
+  border-radius: 16px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  margin-bottom: 20px !important;
+  box-shadow: 0 8px 20px -4px rgba(79, 70, 229, 0.25) !important;
+}
+
+.recruiterCard .portalIcon {
+  background: linear-gradient(135deg, #1e1b4b 0%, #4338ca 100%) !important;
+  color: #ffffff !important;
+}
+
+.candidateCard .portalIcon {
+  background: linear-gradient(135deg, #065f46 0%, #10b981 100%) !important;
+  color: #ffffff !important;
+}
+
+/* 4. Luxury Auth Glassmorphic Card */
+.authPageLayout {
+  background: radial-gradient(circle at 10% 20%, rgba(99, 102, 241, 0.08) 0%, transparent 45%),
+              radial-gradient(circle at 90% 80%, rgba(6, 182, 212, 0.08) 0%, transparent 45%),
+              #f8fafc !important;
+}
+
+.authCard {
+  background: rgba(255, 255, 255, 0.96) !important;
+  backdrop-filter: blur(20px) !important;
+  border: 1px solid rgba(226, 232, 240, 0.9) !important;
+  border-radius: 20px !important;
+  padding: 40px 36px !important;
+  box-shadow: 0 20px 40px -15px rgba(0, 0, 0, 0.08), 0 0 0 1px rgba(255, 255, 255, 0.8) inset !important;
+}
+
+.authCard input {
+  border-radius: 10px !important;
+  border: 1px solid #cbd5e1 !important;
+  padding: 13px 16px !important;
+  font-size: 14px !important;
+  transition: all 0.2s ease !important;
+  background: #f8fafc !important;
+}
+
+.authCard input:focus {
+  background: #ffffff !important;
+  border-color: #6366f1 !important;
+  box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.15) !important;
+}
+
+.demoBanner {
+  background: linear-gradient(135deg, rgba(238, 242, 255, 0.95), rgba(245, 243, 255, 0.95)) !important;
+  border: 1px solid #c7d2fe !important;
+  border-radius: 12px !important;
+  padding: 14px 18px !important;
+  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.08) !important;
+}
+
+/* 5. Quantum AI Interviewer Visualizer Orb */
+.aiAvatarOrb {
+  display: flex !important;
+  align-items: center !important;
+  gap: 16px !important;
+  margin-bottom: 24px !important;
+  padding: 10px 20px !important;
+  border-radius: 40px !important;
+  background: rgba(248, 250, 252, 0.85) !important;
+  backdrop-filter: blur(12px) !important;
+  border: 1px solid rgba(226, 232, 240, 0.9) !important;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.04) !important;
+  width: fit-content !important;
+  transition: all 0.3s ease !important;
+}
+
+.orbCore {
+  width: 52px !important;
+  height: 52px !important;
+  border-radius: 50% !important;
+  display: grid !important;
+  place-items: center !important;
+  color: white !important;
+  transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1) !important;
+  position: relative !important;
+}
+
+.aiAvatarOrb.idle .orbCore {
+  background: linear-gradient(135deg, #4f46e5 0%, #6366f1 100%) !important;
+  box-shadow: 0 0 0 6px rgba(79, 70, 229, 0.15), 0 0 20px rgba(79, 70, 229, 0.3) !important;
+}
+
+.aiAvatarOrb.speaking .orbCore {
+  background: linear-gradient(135deg, #7c3aed 0%, #a855f7 100%) !important;
+  box-shadow: 0 0 0 8px rgba(124, 58, 237, 0.25), 0 0 30px rgba(168, 85, 247, 0.45) !important;
+  animation: pulseSpeaking 1.4s infinite !important;
+}
+
+.aiAvatarOrb.listening .orbCore {
+  background: linear-gradient(135deg, #059669 0%, #10b981 100%) !important;
+  box-shadow: 0 0 0 8px rgba(16, 185, 129, 0.25), 0 0 30px rgba(16, 185, 129, 0.45) !important;
+  animation: pulseListening 1.4s infinite !important;
+}
+
+.aiAvatarOrb.thinking .orbCore {
+  background: linear-gradient(135deg, #d97706 0%, #f59e0b 100%) !important;
+  box-shadow: 0 0 0 8px rgba(245, 158, 11, 0.25), 0 0 30px rgba(245, 158, 11, 0.45) !important;
+}
+
+/* 6. Ultra-Sleek Live Answer Textbox */
+.answerBoxWrapper {
+  margin-bottom: 24px !important;
+}
+
+.answerBoxMain {
+  width: 100% !important;
+  border: 2px solid #6366f1 !important;
+  border-radius: 14px !important;
+  font-size: 15px !important;
+  line-height: 1.7 !important;
+  padding: 16px 20px !important;
+  background: rgba(250, 251, 255, 0.95) !important;
+  color: #0f172a !important;
+  resize: vertical !important;
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1) !important;
+  outline: none !important;
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.06) !important;
+}
+
+.answerBoxMain:focus {
+  border-color: #4338ca !important;
+  background: #ffffff !important;
+  box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.18), 0 8px 20px rgba(99, 102, 241, 0.1) !important;
+}
+
+/* 7. Quantum Video Camera HUD Aside */
+.mediaCard {
+  background: #090d16 !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  border-radius: 18px !important;
+  box-shadow: 0 20px 30px -10px rgba(0, 0, 0, 0.4) !important;
+  overflow: hidden !important;
+}
+
+.mediaCardHeader {
+  background: #111726 !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06) !important;
+  padding: 12px 18px !important;
+}
+
+.feedWrapper {
+  border-radius: 12px !important;
+  overflow: hidden !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3) !important;
+}
+
+.feedWrapper.phoneFeedWrapper {
+  border: 2px solid #06b6d4 !important;
+  box-shadow: 0 0 24px rgba(6, 182, 212, 0.35) !important;
+}
+
+.feedBadge {
+  background: rgba(11, 15, 25, 0.8) !important;
+  backdrop-filter: blur(8px) !important;
+  border: 1px solid rgba(255, 255, 255, 0.15) !important;
+  border-radius: 8px !important;
+  padding: 5px 10px !important;
+  font-size: 11px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.3px !important;
+}
+
+/* 8. Supercharged Buttons */
+.btnLargeDone,
+.btnLargePrimary,
+.btnLargeStart {
+  background: linear-gradient(135deg, #4338ca 0%, #6366f1 100%) !important;
+  box-shadow: 0 4px 15px rgba(79, 70, 229, 0.35) !important;
+  border-radius: 12px !important;
+  font-weight: 700 !important;
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1) !important;
+}
+
+.btnLargeDone:hover:not(:disabled),
+.btnLargePrimary:hover:not(:disabled),
+.btnLargeStart:hover:not(:disabled) {
+  transform: translateY(-2px) !important;
+  box-shadow: 0 8px 25px rgba(79, 70, 229, 0.5) !important;
+}
+
+.btnSecondary {
+  border-radius: 10px !important;
+  transition: all 0.2s ease !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04) !important;
+}
+
+.btnSecondary:hover {
+  background: #f1f5f9 !important;
+  border-color: #94a3b8 !important;
+  transform: translateY(-1px) !important;
+}
+
+/* ==========================================================================
+   LEVEL 1 MILLION: ULTRA-PREMIUM CYBER-ENTERPRISE DESIGN SYSTEM
+   ========================================================================== */
+
+/* 1. Global Canvas & Background Mesh */
+.levelMillionTheme {
+  background-color: #06080f !important;
+  color: #f1f5f9 !important;
+  position: relative;
+  overflow-x: hidden;
+}
+
+/* Ambient Radial Glow Lighting Blobs */
+.ambientGlow {
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+  z-index: 0;
+  filter: blur(140px);
+}
+.glowTopLeft {
+  top: -150px;
+  left: 10%;
+  width: 550px;
+  height: 550px;
+  background: radial-gradient(circle, rgba(99, 102, 241, 0.22) 0%, transparent 70%);
+}
+.glowTopRight {
+  top: 50px;
+  right: 5%;
+  width: 500px;
+  height: 500px;
+  background: radial-gradient(circle, rgba(6, 182, 212, 0.18) 0%, transparent 70%);
+}
+
+/* 2. Floating Frosted Glass Header */
+.levelMillionTheme .publicHeader {
+  background: rgba(6, 8, 15, 0.82) !important;
+  backdrop-filter: blur(20px) !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
+  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5) !important;
+}
+
+.luxuryBrandBadge {
+  background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%) !important;
+  box-shadow: 0 0 20px rgba(99, 102, 241, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.4) !important;
+  border: 1px solid rgba(255, 255, 255, 0.2) !important;
+  border-radius: 12px !important;
+}
+
+.levelMillionTheme .brandTitle {
+  color: #ffffff !important;
+  font-weight: 900 !important;
+  letter-spacing: -0.5px !important;
+}
+
+.levelMillionTheme .brandSubtitle {
+  color: #818cf8 !important;
+  letter-spacing: 1.5px !important;
+  font-weight: 700 !important;
+}
+
+.levelMillionTheme .publicNav a {
+  color: #94a3b8 !important;
+  font-weight: 600 !important;
+  transition: all 0.2s ease !important;
+}
+
+.levelMillionTheme .publicNav a:hover {
+  color: #ffffff !important;
+  text-shadow: 0 0 12px rgba(129, 140, 248, 0.6) !important;
+}
+
+.luxuryBtn {
+  background: rgba(255, 255, 255, 0.06) !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  color: #e2e8f0 !important;
+  border-radius: 10px !important;
+  backdrop-filter: blur(10px) !important;
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1) !important;
+}
+
+.luxuryBtn:hover {
+  background: rgba(255, 255, 255, 0.12) !important;
+  border-color: rgba(255, 255, 255, 0.25) !important;
+  color: #ffffff !important;
+  box-shadow: 0 0 15px rgba(255, 255, 255, 0.1) !important;
+}
+
+.luxuryBtnPrimary {
+  background: linear-gradient(135deg, #4f46e5 0%, #6366f1 100%) !important;
+  border: 1px solid rgba(255, 255, 255, 0.2) !important;
+  color: #ffffff !important;
+  border-radius: 10px !important;
+  box-shadow: 0 0 20px rgba(99, 102, 241, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.3) !important;
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1) !important;
+}
+
+.luxuryBtnPrimary:hover {
+  transform: translateY(-1px) !important;
+  box-shadow: 0 0 30px rgba(99, 102, 241, 0.65), inset 0 1px 0 rgba(255, 255, 255, 0.4) !important;
+}
+
+/* 3. Hero Section */
+.levelMillionTheme .heroSection {
+  background: transparent !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06) !important;
+  padding: 90px 0 70px !important;
+  position: relative;
+  z-index: 1;
+}
+
+.luxuryTag {
+  background: rgba(99, 102, 241, 0.12) !important;
+  border: 1px solid rgba(99, 102, 241, 0.35) !important;
+  color: #a5b4fc !important;
+  box-shadow: 0 0 25px rgba(99, 102, 241, 0.25) !important;
+  backdrop-filter: blur(12px) !important;
+  padding: 8px 20px !important;
+  border-radius: 30px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.8px !important;
+  margin-bottom: 28px !important;
+}
+
+.livePulseDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #22c55e;
+  box-shadow: 0 0 12px #22c55e;
+  animation: pulseDot 1.6s infinite;
+  display: inline-block;
+  margin-right: 4px;
+}
+
+@keyframes pulseDot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.85); }
+}
+
+.levelMillionTheme .heroTitle {
+  color: #ffffff !important;
+  font-size: 54px !important;
+  font-weight: 900 !important;
+  letter-spacing: -1.8px !important;
+  line-height: 1.15 !important;
+  margin-bottom: 24px !important;
+  text-shadow: 0 2px 20px rgba(0, 0, 0, 0.5) !important;
+}
+
+.levelMillionTheme .heroHighlight {
+  background: linear-gradient(135deg, #818cf8 0%, #c084fc 50%, #38bdf8 100%) !important;
+  -webkit-background-clip: text !important;
+  -webkit-text-fill-color: transparent !important;
+  display: inline-block !important;
+}
+
+.levelMillionTheme .heroDescription {
+  color: #94a3b8 !important;
+  font-size: 17px !important;
+  line-height: 1.7 !important;
+  max-width: 800px !important;
+}
+
+/* 4. Luxury Dual Portal Cards */
+.luxuryCard {
+  background: rgba(13, 18, 30, 0.75) !important;
+  backdrop-filter: blur(24px) !important;
+  border: 1px solid rgba(255, 255, 255, 0.09) !important;
+  border-radius: 20px !important;
+  padding: 40px 36px !important;
+  box-shadow: 0 20px 50px -15px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.1) !important;
+  position: relative !important;
+  overflow: hidden !important;
+  transition: all 0.35s cubic-bezier(0.16, 1, 0.3, 1) !important;
+}
+
+.luxuryCard:hover {
+  transform: translateY(-6px) scale(1.01) !important;
+  box-shadow: 0 30px 60px -12px rgba(99, 102, 241, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.2) !important;
+  border-color: rgba(99, 102, 241, 0.4) !important;
+}
+
+.portalCard.recruiterCard {
+  border-top: none !important;
+}
+.portalCard.candidateCard {
+  border-top: none !important;
+}
+
+.cardGlowTop {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, #6366f1, #a855f7, #6366f1);
+  box-shadow: 0 0 15px rgba(99, 102, 241, 0.6);
+}
+
+.cardGlowTop.cyan {
+  background: linear-gradient(90deg, #06b6d4, #3b82f6, #06b6d4);
+  box-shadow: 0 0 15px rgba(6, 182, 212, 0.6);
+}
+
+.portalHeaderRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 22px;
+}
+
+.portalIcon.recruiterIcon {
+  background: rgba(99, 102, 241, 0.15) !important;
+  border: 1px solid rgba(99, 102, 241, 0.35) !important;
+  color: #a5b4fc !important;
+  box-shadow: 0 0 20px rgba(99, 102, 241, 0.25) !important;
+  border-radius: 14px !important;
+}
+
+.portalIcon.candidateIcon {
+  background: rgba(6, 182, 212, 0.15) !important;
+  border: 1px solid rgba(6, 182, 212, 0.35) !important;
+  color: #67e8f9 !important;
+  box-shadow: 0 0 20px rgba(6, 182, 212, 0.25) !important;
+  border-radius: 14px !important;
+}
+
+.portalPill {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 1.2px;
+  padding: 5px 12px;
+  border-radius: 20px;
+}
+
+.recruiterPill {
+  background: rgba(99, 102, 241, 0.15);
+  color: #a5b4fc;
+  border: 1px solid rgba(99, 102, 241, 0.3);
+}
+
+.candidatePill {
+  background: rgba(6, 182, 212, 0.15);
+  color: #67e8f9;
+  border: 1px solid rgba(6, 182, 212, 0.3);
+}
+
+.luxuryCard h3 {
+  color: #ffffff !important;
+  font-size: 23px !important;
+  font-weight: 800 !important;
+  letter-spacing: -0.5px !important;
+  margin-bottom: 14px !important;
+}
+
+.luxuryCard p {
+  color: #94a3b8 !important;
+  font-size: 14px !important;
+  line-height: 1.65 !important;
+}
+
+.portalBulletList li {
+  color: #cbd5e1 !important;
+  font-size: 13px !important;
+  font-weight: 500 !important;
+}
+
+.bulletCheck {
+  color: #818cf8 !important;
+}
+.bulletCheck.cyan {
+  color: #22d3ee !important;
+}
+
+.luxuryCtaPrimary {
+  background: linear-gradient(135deg, #4f46e5 0%, #6366f1 100%) !important;
+  color: #ffffff !important;
+  border-radius: 12px !important;
+  font-weight: 700 !important;
+  box-shadow: 0 0 25px rgba(99, 102, 241, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.3) !important;
+  border: 1px solid rgba(255, 255, 255, 0.2) !important;
+  padding: 14px 24px !important;
+  transition: all 0.25s ease !important;
+}
+
+.luxuryCtaPrimary:hover {
+  transform: translateY(-2px) !important;
+  box-shadow: 0 0 35px rgba(99, 102, 241, 0.7), inset 0 1px 0 rgba(255, 255, 255, 0.4) !important;
+}
+
+.luxuryCtaCyan {
+  background: linear-gradient(135deg, #0891b2 0%, #06b6d4 100%) !important;
+  color: #ffffff !important;
+  border-radius: 12px !important;
+  font-weight: 700 !important;
+  box-shadow: 0 0 25px rgba(6, 182, 212, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.3) !important;
+  border: 1px solid rgba(255, 255, 255, 0.2) !important;
+  padding: 14px 24px !important;
+  transition: all 0.25s ease !important;
+}
+
+.luxuryCtaCyan:hover {
+  transform: translateY(-2px) !important;
+  box-shadow: 0 0 35px rgba(6, 182, 212, 0.7), inset 0 1px 0 rgba(255, 255, 255, 0.4) !important;
+}
+
+.credentialHint {
+  margin-top: 12px;
+  font-size: 11px;
+  color: #64748b;
+  text-align: center;
+}
+
+.credentialHint code {
+  background: rgba(255, 255, 255, 0.08);
+  color: #e2e8f0;
+  padding: 2px 7px;
+  border-radius: 5px;
+  font-weight: 600;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* 5. Telemetry Strip */
+.telemetryStrip {
+  margin-top: 55px;
+  background: rgba(13, 18, 30, 0.65);
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  padding: 20px 32px;
+  display: flex;
+  align-items: center;
+  justify-content: space-around;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+}
+
+.telemetryItem {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.telemetryValue {
+  font-size: 26px;
+  font-weight: 900;
+  color: #ffffff;
+  letter-spacing: -0.5px;
+  text-shadow: 0 0 20px rgba(129, 140, 248, 0.5);
+}
+
+.telemetryLabel {
+  font-size: 11px;
+  font-weight: 700;
+  color: #94a3b8;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.telemetryDivider {
+  width: 1px;
+  height: 38px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* 6. Workflow & Feature Cards */
+.levelMillionTheme .sectionWorkflow,
+.levelMillionTheme .sectionFeatures,
+.levelMillionTheme .sectionTrust {
+  background: transparent !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06) !important;
+  position: relative;
+  z-index: 1;
+}
+
+.levelMillionTheme .sectionHeading h2 {
+  color: #ffffff !important;
+  font-size: 36px !important;
+  font-weight: 800 !important;
+  letter-spacing: -1px !important;
+}
+
+.levelMillionTheme .sectionHeading p {
+  color: #94a3b8 !important;
+  font-size: 15px !important;
+}
+
+.luxuryWorkflowStep {
+  background: rgba(13, 18, 30, 0.65) !important;
+  backdrop-filter: blur(20px) !important;
+  border: 1px solid rgba(255, 255, 255, 0.07) !important;
+  border-radius: 16px !important;
+  padding: 30px 24px !important;
+  transition: all 0.3s ease !important;
+}
+
+.luxuryWorkflowStep:hover {
+  transform: translateY(-4px) !important;
+  border-color: rgba(99, 102, 241, 0.35) !important;
+  box-shadow: 0 15px 35px -10px rgba(99, 102, 241, 0.25) !important;
+}
+
+.stepIconWrapper {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: rgba(99, 102, 241, 0.15);
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  color: #a5b4fc;
+  display: grid;
+  place-items: center;
+  margin: 14px 0 16px;
+}
+
+.luxuryWorkflowStep h4 {
+  color: #ffffff !important;
+  font-size: 16px !important;
+  font-weight: 700 !important;
+}
+
+.luxuryWorkflowStep p {
+  color: #94a3b8 !important;
+  font-size: 13px !important;
+}
+
+.luxuryFeatureCard {
+  background: rgba(13, 18, 30, 0.65) !important;
+  backdrop-filter: blur(20px) !important;
+  border: 1px solid rgba(255, 255, 255, 0.07) !important;
+  border-radius: 16px !important;
+  padding: 32px 28px !important;
+  transition: all 0.3s ease !important;
+}
+
+.luxuryFeatureCard:hover {
+  transform: translateY(-4px) !important;
+  border-color: rgba(6, 182, 212, 0.35) !important;
+  box-shadow: 0 15px 35px -10px rgba(6, 182, 212, 0.25) !important;
+}
+
+.featureIconWrapper {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  background: rgba(6, 182, 212, 0.12);
+  border: 1px solid rgba(6, 182, 212, 0.3);
+  color: #67e8f9;
+  display: grid;
+  place-items: center;
+  margin-bottom: 20px;
+}
+
+.luxuryFeatureCard h4 {
+  color: #ffffff !important;
+  font-size: 17px !important;
+  font-weight: 700 !important;
+  margin-bottom: 10px !important;
+}
+
+.luxuryFeatureCard p {
+  color: #94a3b8 !important;
+  font-size: 13px !important;
+  line-height: 1.6 !important;
+}
+
+.luxuryTrustBanner {
+  background: rgba(13, 18, 30, 0.75) !important;
+  backdrop-filter: blur(20px) !important;
+  border: 1px solid rgba(99, 102, 241, 0.25) !important;
+  border-radius: 18px !important;
+  padding: 36px 40px !important;
+  box-shadow: 0 20px 40px -10px rgba(0, 0, 0, 0.4) !important;
+}
+
+.trustIconWrapper {
+  color: #818cf8;
+  flex-shrink: 0;
+}
+
+.luxuryTrustBanner h3 {
+  color: #ffffff !important;
+  font-size: 20px !important;
+  font-weight: 800 !important;
+}
+
+.luxuryTrustBanner p {
+  color: #94a3b8 !important;
+  font-size: 14px !important;
+  line-height: 1.65 !important;
+}
+
+/* 7. Public Footer */
+.levelMillionTheme .publicFooter {
+  background: #04060a !important;
+  border-top: 1px solid rgba(255, 255, 255, 0.06) !important;
+  color: #94a3b8 !important;
+}
+
+.levelMillionTheme .publicFooter a {
+  color: #cbd5e1 !important;
+}
+
+.levelMillionTheme .publicFooter a:hover {
+  color: #818cf8 !important;
+}
+
+.levelMillionTheme .footerBottom {
+  border-top: 1px solid rgba(255, 255, 255, 0.05) !important;
+  color: #64748b !important;
+}
+
+/* 8. Auth Layouts in Level 1 Million Mode */
+.authPageLayout {
+  background: radial-gradient(circle at 10% 20%, rgba(99, 102, 241, 0.15) 0%, transparent 50%),
+              radial-gradient(circle at 90% 80%, rgba(6, 182, 212, 0.12) 0%, transparent 50%),
+              #070913 !important;
+  min-height: 100vh !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+
+.authCard {
+  background: rgba(13, 18, 30, 0.88) !important;
+  backdrop-filter: blur(28px) !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  border-radius: 22px !important;
+  padding: 42px 38px !important;
+  box-shadow: 0 30px 60px -15px rgba(0, 0, 0, 0.7), 0 0 40px rgba(99, 102, 241, 0.15) !important;
+  color: #f1f5f9 !important;
+}
+
+.authBrandHeader .brandName {
+  color: #ffffff !important;
+  font-weight: 800 !important;
+}
+
+.authCard h2 {
+  color: #ffffff !important;
+  font-weight: 800 !important;
+}
+
+.authCard p {
+  color: #94a3b8 !important;
+}
+
+.authCard label {
+  color: #cbd5e1 !important;
+  font-weight: 600 !important;
+  font-size: 13px !important;
+}
+
+.authCard input {
+  background: rgba(255, 255, 255, 0.05) !important;
+  border: 1px solid rgba(255, 255, 255, 0.14) !important;
+  color: #ffffff !important;
+  border-radius: 10px !important;
+  padding: 13px 16px !important;
+  transition: all 0.2s ease !important;
+}
+
+.authCard input:focus {
+  background: rgba(255, 255, 255, 0.08) !important;
+  border-color: #818cf8 !important;
+  box-shadow: 0 0 0 3px rgba(129, 140, 248, 0.25), 0 0 15px rgba(129, 140, 248, 0.2) !important;
+}
+
+.authCard input::placeholder {
+  color: #64748b !important;
+}
+
+.authCardFooter a {
+  color: #94a3b8 !important;
+}
+
+.authCardFooter a:hover {
+  color: #818cf8 !important;
+}
+
+/* 9. Candidate Dashboard Level 1 Million Overrides */
+.candidatePortalLayout {
+  background: radial-gradient(circle at 10% 20%, rgba(99, 102, 241, 0.08) 0%, transparent 45%),
+              radial-gradient(circle at 90% 80%, rgba(6, 182, 212, 0.08) 0%, transparent 45%),
+              #f8fafc !important;
+  min-height: 100vh !important;
+}
+
+.candWelcomeBanner {
+  background: linear-gradient(135deg, #1e1b4b 0%, #312e81 60%, #4338ca 100%) !important;
+  border-radius: 18px !important;
+  padding: 32px 36px !important;
+  color: white !important;
+  box-shadow: 0 10px 30px rgba(30, 27, 75, 0.25) !important;
+  margin-bottom: 28px !important;
+}
+
+.candEyebrow {
+  color: #a5b4fc !important;
+  font-weight: 700 !important;
+  letter-spacing: 1.5px !important;
+}
+
+.upcomingInterviewCard {
+  background: #ffffff !important;
+  border: 1px solid #c7d2fe !important;
+  border-radius: 20px !important;
+  padding: 36px 34px !important;
+  box-shadow: 0 15px 35px -5px rgba(99, 102, 241, 0.12), 0 0 0 1px rgba(99, 102, 241, 0.1) !important;
+  border-top: none !important;
+  position: relative !important;
+  overflow: hidden !important;
+}
+
+.upcomingInterviewCard::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 4px;
+  background: linear-gradient(90deg, #4f46e5, #06b6d4, #10b981);
+}
+
+.btnCandidateCta {
+  background: linear-gradient(135deg, #4f46e5 0%, #6366f1 100%) !important;
+  color: #ffffff !important;
+  border-radius: 12px !important;
+  padding: 16px 32px !important;
+  font-size: 15px !important;
+  font-weight: 700 !important;
+  box-shadow: 0 8px 25px rgba(79, 70, 229, 0.35) !important;
+  transition: all 0.25s ease !important;
+}
+
+.btnCandidateCta:hover {
+  transform: translateY(-2px) !important;
+  box-shadow: 0 12px 30px rgba(79, 70, 229, 0.5) !important;
+}

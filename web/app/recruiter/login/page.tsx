@@ -128,10 +128,46 @@ export default function RecruiterLoginPage() {
             </button>
           </form>
 
-          <div className="authHelperNotice">
-            <strong>Default Access Credentials:</strong>
-            <p>Username: <code>recruiter</code> · Password: <code>RTPLRecruiter2026!</code></p>
-            <p>Admin: <code>admin</code> · Password: <code>RTPLAdmin2026!</code></p>
+          <div className="authHelperNotice luxuryHelperNotice">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+              <strong style={{ color: '#818cf8', fontSize: 12 }}>⚡ 1-Click Fill Demo Credentials:</strong>
+            </div>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button
+                type="button"
+                onClick={() => { setUsername('recruiter'); setPassword('RTPLRecruiter2026!'); setError(''); }}
+                style={{
+                  flex: 1,
+                  background: 'rgba(99, 102, 241, 0.15)',
+                  border: '1px solid rgba(99, 102, 241, 0.4)',
+                  color: '#a5b4fc',
+                  padding: '6px 10px',
+                  borderRadius: 6,
+                  fontSize: 11,
+                  fontWeight: 600,
+                  cursor: 'pointer'
+                }}
+              >
+                Recruiter (recruiter)
+              </button>
+              <button
+                type="button"
+                onClick={() => { setUsername('admin'); setPassword('RTPLAdmin2026!'); setError(''); }}
+                style={{
+                  flex: 1,
+                  background: 'rgba(147, 51, 234, 0.15)',
+                  border: '1px solid rgba(147, 51, 234, 0.4)',
+                  color: '#d8b4fe',
+                  padding: '6px 10px',
+                  borderRadius: 6,
+                  fontSize: 11,
+                  fontWeight: 600,
+                  cursor: 'pointer'
+                }}
+              >
+                Admin (admin)
+              </button>
+            </div>
           </div>
 
           <div className="authCardFooter">
