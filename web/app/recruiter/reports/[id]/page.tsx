@@ -12,6 +12,7 @@ import {
   RotateCcw,
   CheckCircle2,
   AlertTriangle,
+  AlertCircle,
   Award,
   Video,
   Eye,
