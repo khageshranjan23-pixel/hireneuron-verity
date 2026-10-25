@@ -66,6 +66,23 @@ export default function AIProctorEngine({
   const calibrationRef = useRef<ProctorCalibration>({ ...DEFAULT_CALIBRATION });
   const calibrationSamplesRef = useRef<{ yaw: number; pitch: number; roll: number; gazeX: number; gazeY: number }[]>([]);
   const isCalibratingRef = useRef<boolean>(false);
+  const autoCalibratedRef = useRef<boolean>(false);
+  const autoCalibWarmupRef = useRef<{ yaw: number; pitch: number; roll: number; gazeX: number; gazeY: number }[]>([]);
+
+  // Temporal Confirmation State (Eliminates single-frame micro-saccades & sensor jitter)
+  const consecutiveCountsRef = useRef({
+    headLeft: 0,
+    headRight: 0,
+    headUp: 0,
+    headDown: 0,
+    gazeLeft: 0,
+    gazeRight: 0,
+    gazeUp: 0,
+    gazeDown: 0,
+    multipleFaces: 0,
+    faceAbsent: 0,
+    centerCount: 0,
+  });
 
   // Warning & Diagnostics UI State
   const [warning, setWarning] = useState<string>('');
@@ -137,7 +154,9 @@ export default function AIProctorEngine({
 
   const resetCalibration = useCallback(() => {
     calibrationRef.current = { ...DEFAULT_CALIBRATION };
-    triggerVisualWarning('🔄 Calibration reset to defaults.', 'CALIBRATING');
+    autoCalibratedRef.current = false;
+    autoCalibWarmupRef.current = [];
+    triggerVisualWarning('🔄 Calibration reset. Recalibrating…', 'CALIBRATING');
   }, [triggerVisualWarning]);
 
   // SECTION 1: DETECTOR LIFECYCLE (STABLE, INITIALIZES ONCE PER STREAM)
@@ -207,6 +226,7 @@ export default function AIProctorEngine({
             source.connect(analyser);
             const audioData = new Uint8Array(analyser.frequencyBinCount);
 
+            let highAudioConsecutiveCount = 0;
             audioCheckInterval = setInterval(() => {
               if (isCancelled) return;
               try {
@@ -214,9 +234,13 @@ export default function AIProctorEngine({
                 let sum = 0;
                 for (let i = 0; i < audioData.length; i++) sum += audioData[i];
                 const avgVolume = sum / audioData.length;
-                if (avgVolume > 65) {
-                  triggerVisualWarning('⚠️ High background audio activity', 'BACKGROUND_NOISE');
-                  dispatchViolation('BACKGROUND_NOISE', 'High background audio noise detected', 'OBSERVED_EVENT');
+                if (avgVolume > 85) {
+                  highAudioConsecutiveCount++;
+                  if (highAudioConsecutiveCount >= 4) {
+                    dispatchViolation('BACKGROUND_NOISE', 'High background audio noise detected', 'OBSERVED_EVENT');
+                  }
+                } else {
+                  highAudioConsecutiveCount = 0;
                 }
               } catch (_) {}
             }, 500);
@@ -273,35 +297,87 @@ export default function AIProctorEngine({
             let headPoseResult: HeadPoseResult | null = null;
             let eyeGazeResult: EyeGazeResult | null = null;
 
-            // 1. Multiple Faces Observation (Immediate)
+            // Frame counts ref shorthand
+            const counts = consecutiveCountsRef.current;
+
+            // 1. Multiple Faces Observation
             if (faces.length > 1) {
-              activeObservation = `Multiple Persons Detected (${faces.length})`;
-              triggerVisualWarning(`🚨 Multiple faces detected (${faces.length})`, 'MULTIPLE_PERSONS');
-              dispatchViolation('MULTIPLE_PERSONS', `Cheating alert: ${faces.length} faces in frame`, 'NEEDS_REVIEW_HIGH');
+              counts.multipleFaces++;
+              counts.faceAbsent = 0;
+              counts.centerCount = 0;
+              if (counts.multipleFaces >= 2) {
+                activeObservation = `Multiple Persons Detected (${faces.length})`;
+                triggerVisualWarning(`🚨 Multiple faces detected (${faces.length})`, 'MULTIPLE_PERSONS');
+                dispatchViolation('MULTIPLE_PERSONS', `Cheating alert: ${faces.length} faces in frame`, 'NEEDS_REVIEW_HIGH');
+              }
             } else if (faces.length === 0) {
               // 2. Face Absent Observation
-              activeObservation = 'Face Not Detected';
-              missReason = 'No face detected in video frame';
-              triggerVisualWarning('⚠️ Face not detected. Remain in frame.', 'FACE_ABSENT');
-              dispatchViolation('FACE_ABSENT', 'Candidate face out of camera view', 'NEEDS_REVIEW');
+              counts.faceAbsent++;
+              counts.multipleFaces = 0;
+              counts.centerCount = 0;
+              if (counts.faceAbsent >= 3) {
+                activeObservation = 'Face Not Detected';
+                missReason = 'No face detected in video frame';
+                triggerVisualWarning('⚠️ Face not detected. Remain in frame.', 'FACE_ABSENT');
+                dispatchViolation('FACE_ABSENT', 'Candidate face out of camera view', 'NEEDS_REVIEW');
+              }
             } else {
+              // Reset face count anomalies
+              counts.multipleFaces = 0;
+              counts.faceAbsent = 0;
+
               // 3. Single Face: Geometry Analysis
               const keypoints = faces[0].keypoints as Keypoint3D[];
-              headPoseResult = estimateHeadPose(keypoints, calibrationRef.current);
-              eyeGazeResult = estimateEyeGaze(keypoints, headPoseResult, calibrationRef.current);
 
-              // Handle Neutral Calibration Sampling
-              if (isCalibratingRef.current) {
+              // Handle Initial Automatic Baseline Calibration (First 12 valid frames)
+              if (!autoCalibratedRef.current) {
+                const rawPose = estimateHeadPose(keypoints, DEFAULT_CALIBRATION);
+                const rawGaze = estimateEyeGaze(keypoints, rawPose, DEFAULT_CALIBRATION);
+                autoCalibWarmupRef.current.push({
+                  yaw: rawPose.yaw,
+                  pitch: rawPose.pitch,
+                  roll: rawPose.roll,
+                  gazeX: rawGaze.gazeX,
+                  gazeY: rawGaze.gazeY,
+                });
+
+                if (autoCalibWarmupRef.current.length >= 12) {
+                  const s = autoCalibWarmupRef.current;
+                  const n = s.length;
+                  const avg = s.reduce((acc, curr) => ({
+                    yaw: acc.yaw + curr.yaw,
+                    pitch: acc.pitch + curr.pitch,
+                    roll: acc.roll + curr.roll,
+                    gazeX: acc.gazeX + curr.gazeX,
+                    gazeY: acc.gazeY + curr.gazeY
+                  }), { yaw: 0, pitch: 0, roll: 0, gazeX: 0, gazeY: 0 });
+
+                  calibrationRef.current = {
+                    baselineYaw: avg.yaw / n,
+                    baselinePitch: avg.pitch / n,
+                    baselineRoll: avg.roll / n,
+                    baselineGazeX: avg.gazeX / n,
+                    baselineGazeY: avg.gazeY / n
+                  };
+                  autoCalibratedRef.current = true;
+                }
+                activeObservation = 'Calibrating posture baseline…';
+                missReason = 'Auto-calibrating neutral head pose';
+              } else if (isCalibratingRef.current) {
+                // Manual Calibration Sampling
+                const rawPose = estimateHeadPose(keypoints, DEFAULT_CALIBRATION);
+                const rawGaze = estimateEyeGaze(keypoints, rawPose, DEFAULT_CALIBRATION);
                 calibrationSamplesRef.current.push({
-                  yaw: headPoseResult.yaw,
-                  pitch: headPoseResult.pitch,
-                  roll: headPoseResult.roll,
-                  gazeX: eyeGazeResult.gazeX,
-                  gazeY: eyeGazeResult.gazeY
+                  yaw: rawPose.yaw,
+                  pitch: rawPose.pitch,
+                  roll: rawPose.roll,
+                  gazeX: rawGaze.gazeX,
+                  gazeY: rawGaze.gazeY
                 });
                 if (calibrationSamplesRef.current.length >= 15) {
-                  const n = calibrationSamplesRef.current.length;
-                  const avg = calibrationSamplesRef.current.reduce((acc, curr) => ({
+                  const s = calibrationSamplesRef.current;
+                  const n = s.length;
+                  const avg = s.reduce((acc, curr) => ({
                     yaw: acc.yaw + curr.yaw,
                     pitch: acc.pitch + curr.pitch,
                     roll: acc.roll + curr.roll,
@@ -319,54 +395,130 @@ export default function AIProctorEngine({
                   isCalibratingRef.current = false;
                   triggerVisualWarning('✓ Neutral pose calibrated successfully!', 'CALIBRATING');
                 }
-              }
-
-              // Evaluate Head Pose Direction
-              if (headPoseResult.direction === 'LEFT') {
-                activeObservation = `Head Turned Left (${headPoseResult.yaw}°)`;
-                triggerVisualWarning('⚠️ Please look directly at screen (Head Left)', 'HEAD_TURN');
-                dispatchViolation('HEAD_TURN_PROLONGED', `Head turned left: ${headPoseResult.yaw}°`, 'NEEDS_REVIEW');
-              } else if (headPoseResult.direction === 'RIGHT') {
-                activeObservation = `Head Turned Right (${headPoseResult.yaw}°)`;
-                triggerVisualWarning('⚠️ Please look directly at screen (Head Right)', 'HEAD_TURN');
-                dispatchViolation('HEAD_TURN_PROLONGED', `Head turned right: ${headPoseResult.yaw}°`, 'NEEDS_REVIEW');
-              } else if (headPoseResult.direction === 'UP') {
-                activeObservation = `Head Tilted Up (${headPoseResult.pitch}°)`;
-                triggerVisualWarning('⚠️ Please keep head straight (Head Up)', 'HEAD_TURN');
-                dispatchViolation('HEAD_TURN_PROLONGED', `Head tilted up: ${headPoseResult.pitch}°`, 'OBSERVED_EVENT');
-              } else if (headPoseResult.direction === 'DOWN') {
-                activeObservation = `Head Tilted Down (${headPoseResult.pitch}°)`;
-                triggerVisualWarning('⚠️ Please keep head straight (Head Down)', 'HEAD_TURN');
-                dispatchViolation('HEAD_TURN_PROLONGED', `Head tilted down: ${headPoseResult.pitch}°`, 'OBSERVED_EVENT');
-              } else if (eyeGazeResult.isBlinking) {
-                // Natural blink rejection
-                missReason = 'Natural eye blink (rejected as non-violation)';
-              } else if (eyeGazeResult.direction === 'LEFT') {
-                // Eye-Only Gaze Left
-                activeObservation = `Eye Gaze Left (X: ${eyeGazeResult.gazeX})`;
-                triggerVisualWarning('⚠️ Looking away: Eyes Left', 'GAZE_DEVIATION');
-                dispatchViolation('GAZE_DEVIATION', `Eyes looking left (iris offset: ${eyeGazeResult.gazeX})`, 'NEEDS_REVIEW');
-              } else if (eyeGazeResult.direction === 'RIGHT') {
-                // Eye-Only Gaze Right
-                activeObservation = `Eye Gaze Right (X: ${eyeGazeResult.gazeX})`;
-                triggerVisualWarning('⚠️ Looking away: Eyes Right', 'GAZE_DEVIATION');
-                dispatchViolation('GAZE_DEVIATION', `Eyes looking right (iris offset: ${eyeGazeResult.gazeX})`, 'NEEDS_REVIEW');
-              } else if (eyeGazeResult.direction === 'UP') {
-                // Eye-Only Gaze Up
-                activeObservation = `Eye Gaze Up (Y: ${eyeGazeResult.gazeY})`;
-                triggerVisualWarning('⚠️ Looking away: Eyes Up', 'GAZE_DEVIATION');
-                dispatchViolation('GAZE_DEVIATION', `Eyes looking up (iris offset: ${eyeGazeResult.gazeY})`, 'OBSERVED_EVENT');
-              } else if (eyeGazeResult.direction === 'DOWN') {
-                // Eye-Only Gaze Down
-                activeObservation = `Eye Gaze Down (Y: ${eyeGazeResult.gazeY})`;
-                triggerVisualWarning('⚠️ Looking away: Eyes Down', 'GAZE_DEVIATION');
-                dispatchViolation('GAZE_DEVIATION', `Eyes looking down (iris offset: ${eyeGazeResult.gazeY})`, 'OBSERVED_EVENT');
               } else {
-                missReason = 'Face neutral and within acceptable center deadband';
-                // Clear warning once visual hold timer expires
-                if (Date.now() > warningExpiryRef.current) {
-                  setWarning('');
-                  setWarningType('');
+                // Regular Frame Evaluation with Calibrated Baseline
+                headPoseResult = estimateHeadPose(keypoints, calibrationRef.current);
+                eyeGazeResult = estimateEyeGaze(keypoints, headPoseResult, calibrationRef.current);
+
+                // A. Head Pose Deviations (Require 3 consecutive frames = ~150-200ms)
+                if (headPoseResult.direction === 'LEFT') {
+                  counts.headLeft++;
+                  counts.headRight = 0;
+                  counts.headUp = 0;
+                  counts.headDown = 0;
+                  counts.centerCount = 0;
+                  if (counts.headLeft >= 3) {
+                    activeObservation = `Head Turned Left (${headPoseResult.yaw}°)`;
+                    triggerVisualWarning('⚠️ Please look directly at screen (Head Left)', 'HEAD_TURN');
+                    dispatchViolation('HEAD_TURN_PROLONGED', `Head turned left: ${headPoseResult.yaw}°`, 'NEEDS_REVIEW');
+                  }
+                } else if (headPoseResult.direction === 'RIGHT') {
+                  counts.headRight++;
+                  counts.headLeft = 0;
+                  counts.headUp = 0;
+                  counts.headDown = 0;
+                  counts.centerCount = 0;
+                  if (counts.headRight >= 3) {
+                    activeObservation = `Head Turned Right (${headPoseResult.yaw}°)`;
+                    triggerVisualWarning('⚠️ Please look directly at screen (Head Right)', 'HEAD_TURN');
+                    dispatchViolation('HEAD_TURN_PROLONGED', `Head turned right: ${headPoseResult.yaw}°`, 'NEEDS_REVIEW');
+                  }
+                } else if (headPoseResult.direction === 'UP') {
+                  counts.headUp++;
+                  counts.headLeft = 0;
+                  counts.headRight = 0;
+                  counts.headDown = 0;
+                  counts.centerCount = 0;
+                  if (counts.headUp >= 3) {
+                    activeObservation = `Head Tilted Up (${headPoseResult.pitch}°)`;
+                    triggerVisualWarning('⚠️ Please keep head straight (Head Up)', 'HEAD_TURN');
+                    dispatchViolation('HEAD_TURN_PROLONGED', `Head tilted up: ${headPoseResult.pitch}°`, 'OBSERVED_EVENT');
+                  }
+                } else if (headPoseResult.direction === 'DOWN') {
+                  counts.headDown++;
+                  counts.headLeft = 0;
+                  counts.headRight = 0;
+                  counts.headUp = 0;
+                  counts.centerCount = 0;
+                  if (counts.headDown >= 3) {
+                    activeObservation = `Head Tilted Down (${headPoseResult.pitch}°)`;
+                    triggerVisualWarning('⚠️ Please keep head straight (Head Down)', 'HEAD_TURN');
+                    dispatchViolation('HEAD_TURN_PROLONGED', `Head tilted down: ${headPoseResult.pitch}°`, 'OBSERVED_EVENT');
+                  }
+                } else {
+                  // Head is CENTER
+                  counts.headLeft = 0;
+                  counts.headRight = 0;
+                  counts.headUp = 0;
+                  counts.headDown = 0;
+
+                  // B. Eye Gaze Deviations (only when head is CENTER; require 4 consecutive frames = ~200-250ms)
+                  if (eyeGazeResult.isBlinking) {
+                    missReason = 'Natural eye blink (rejected as non-violation)';
+                    counts.gazeLeft = 0;
+                    counts.gazeRight = 0;
+                    counts.gazeUp = 0;
+                    counts.gazeDown = 0;
+                  } else if (eyeGazeResult.direction === 'LEFT') {
+                    counts.gazeLeft++;
+                    counts.gazeRight = 0;
+                    counts.gazeUp = 0;
+                    counts.gazeDown = 0;
+                    counts.centerCount = 0;
+                    if (counts.gazeLeft >= 4) {
+                      activeObservation = `Eye Gaze Left (X: ${eyeGazeResult.gazeX})`;
+                      triggerVisualWarning('⚠️ Looking away: Eyes Left', 'GAZE_DEVIATION');
+                      dispatchViolation('GAZE_DEVIATION', `Eyes looking left (iris offset: ${eyeGazeResult.gazeX})`, 'NEEDS_REVIEW');
+                    }
+                  } else if (eyeGazeResult.direction === 'RIGHT') {
+                    counts.gazeRight++;
+                    counts.gazeLeft = 0;
+                    counts.gazeUp = 0;
+                    counts.gazeDown = 0;
+                    counts.centerCount = 0;
+                    if (counts.gazeRight >= 4) {
+                      activeObservation = `Eye Gaze Right (X: ${eyeGazeResult.gazeX})`;
+                      triggerVisualWarning('⚠️ Looking away: Eyes Right', 'GAZE_DEVIATION');
+                      dispatchViolation('GAZE_DEVIATION', `Eyes looking right (iris offset: ${eyeGazeResult.gazeX})`, 'NEEDS_REVIEW');
+                    }
+                  } else if (eyeGazeResult.direction === 'UP') {
+                    counts.gazeUp++;
+                    counts.gazeLeft = 0;
+                    counts.gazeRight = 0;
+                    counts.gazeDown = 0;
+                    counts.centerCount = 0;
+                    if (counts.gazeUp >= 4) {
+                      activeObservation = `Eye Gaze Up (Y: ${eyeGazeResult.gazeY})`;
+                      triggerVisualWarning('⚠️ Looking away: Eyes Up', 'GAZE_DEVIATION');
+                      dispatchViolation('GAZE_DEVIATION', `Eyes looking up (iris offset: ${eyeGazeResult.gazeY})`, 'OBSERVED_EVENT');
+                    }
+                  } else if (eyeGazeResult.direction === 'DOWN') {
+                    counts.gazeDown++;
+                    counts.gazeLeft = 0;
+                    counts.gazeRight = 0;
+                    counts.gazeUp = 0;
+                    counts.centerCount = 0;
+                    if (counts.gazeDown >= 4) {
+                      activeObservation = `Eye Gaze Down (Y: ${eyeGazeResult.gazeY})`;
+                      triggerVisualWarning('⚠️ Looking away: Eyes Down', 'GAZE_DEVIATION');
+                      dispatchViolation('GAZE_DEVIATION', `Eyes looking down (iris offset: ${eyeGazeResult.gazeY})`, 'OBSERVED_EVENT');
+                    }
+                  } else {
+                    // Both Head and Eyes are CENTER!
+                    counts.gazeLeft = 0;
+                    counts.gazeRight = 0;
+                    counts.gazeUp = 0;
+                    counts.gazeDown = 0;
+                    counts.centerCount++;
+                    missReason = 'Face neutral and within acceptable center deadband';
+
+                    // Clear warning immediately after 2 consecutive centered frames (~100ms)
+                    if (counts.centerCount >= 2) {
+                      setWarning('');
+                      setWarningType('');
+                      warningExpiryRef.current = 0;
+                    }
+                  }
                 }
               }
 

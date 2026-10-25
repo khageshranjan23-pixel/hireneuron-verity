@@ -140,21 +140,22 @@ export function estimateHeadPose(
   // Project Nose position along Face Vertical Axis
   const noseFromForehead = (nose.x - forehead.x) * faceUnitX + (nose.y - forehead.y) * faceUnitY;
   const noseFromChin = (chin.x - nose.x) * faceUnitX + (chin.y - nose.y) * faceUnitY;
-  
-  // Ratio comparison: in neutral pose, nose is ~60% down from forehead
-  const pitchMetric = (noseFromChin - noseFromForehead * 0.7) / faceHeight;
-  const rawPitch = Math.asin(Math.max(-0.95, Math.min(0.95, pitchMetric * 1.8))) * (180 / Math.PI);
+
+  // In neutral forward-looking human face, noseFromChin and noseFromForehead
+  // are balanced relative to candidate's baseline.
+  const pitchMetric = (noseFromChin - noseFromForehead) / faceHeight;
+  const rawPitch = Math.asin(Math.max(-0.95, Math.min(0.95, pitchMetric * 1.5))) * (180 / Math.PI);
   const pitch = rawPitch - calibration.baselinePitch;
 
   // Confidence based on landmark presence and scale
   const confidence = Math.min(1.0, Math.max(0.2, (faceHeight / 120.0)));
 
-  // Direction classification
+  // Direction classification with realistic deadbands (prevents false positives during normal reading)
   let direction: 'CENTER' | 'LEFT' | 'RIGHT' | 'UP' | 'DOWN' = 'CENTER';
-  if (yaw < -16) direction = 'LEFT';
-  else if (yaw > 16) direction = 'RIGHT';
-  else if (pitch < -14) direction = 'DOWN';
-  else if (pitch > 14) direction = 'UP';
+  if (yaw < -20) direction = 'LEFT';
+  else if (yaw > 20) direction = 'RIGHT';
+  else if (pitch < -18) direction = 'DOWN';
+  else if (pitch > 18) direction = 'UP';
 
   return {
     yaw: Math.round(yaw * 10) / 10,
@@ -271,10 +272,10 @@ export function estimateEyeGaze(
   // Gaze confidence based on EAR and landmark validity
   const confidence = Math.min(1.0, Math.max(0.2, (leftEAR + rightEAR) * 1.8));
 
-  // 4. Direction Classification
+  // 4. Direction Classification (realistic deadbands to avoid triggering while reading on-screen)
   let direction: 'CENTER' | 'LEFT' | 'RIGHT' | 'UP' | 'DOWN' | 'BLINK' | 'UNKNOWN' = 'CENTER';
-  const GAZE_THRESHOLD_H = 0.12;
-  const GAZE_THRESHOLD_V = 0.15;
+  const GAZE_THRESHOLD_H = 0.22;
+  const GAZE_THRESHOLD_V = 0.24;
 
   if (compensatedGazeX < -GAZE_THRESHOLD_H) {
     direction = 'LEFT';

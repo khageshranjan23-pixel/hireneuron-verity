@@ -95,15 +95,15 @@ function estimateHeadPose(keypoints, calib = { baselineYaw: 0, baselinePitch: 0,
   const noseFromForehead = (nose.x - forehead.x) * faceUnitX + (nose.y - forehead.y) * faceUnitY;
   const noseFromChin = (chin.x - nose.x) * faceUnitX + (chin.y - nose.y) * faceUnitY;
 
-  const pitchMetric = (noseFromChin - noseFromForehead * 0.7) / faceHeight;
-  const rawPitch = Math.asin(Math.max(-0.95, Math.min(0.95, pitchMetric * 1.8))) * (180 / Math.PI);
+  const pitchMetric = (noseFromChin - noseFromForehead) / faceHeight;
+  const rawPitch = Math.asin(Math.max(-0.95, Math.min(0.95, pitchMetric * 1.5))) * (180 / Math.PI);
   const pitch = rawPitch - calib.baselinePitch;
 
   let direction = 'CENTER';
-  if (yaw < -16) direction = 'LEFT';
-  else if (yaw > 16) direction = 'RIGHT';
-  else if (pitch < -14) direction = 'DOWN';
-  else if (pitch > 14) direction = 'UP';
+  if (yaw < -20) direction = 'LEFT';
+  else if (yaw > 20) direction = 'RIGHT';
+  else if (pitch < -18) direction = 'DOWN';
+  else if (pitch > 18) direction = 'UP';
 
   return { yaw: Math.round(yaw * 10) / 10, pitch: Math.round(pitch * 10) / 10, roll: Math.round(roll * 10) / 10, direction };
 }
@@ -153,10 +153,10 @@ function estimateEyeGaze(keypoints, headPose, calib = { baselineGazeX: 0, baseli
   const gazeY = (rawIrisY - pitchComp) - calib.baselineGazeY;
 
   let direction = 'CENTER';
-  if (gazeX < -0.12) direction = 'LEFT';
-  else if (gazeX > 0.12) direction = 'RIGHT';
-  else if (gazeY < -0.15) direction = 'UP';
-  else if (gazeY > 0.15) direction = 'DOWN';
+  if (gazeX < -0.22) direction = 'LEFT';
+  else if (gazeX > 0.22) direction = 'RIGHT';
+  else if (gazeY < -0.24) direction = 'UP';
+  else if (gazeY > 0.24) direction = 'DOWN';
 
   return { leftEAR, rightEAR, isBlinking: false, gazeX: Math.round(gazeX * 1000) / 1000, gazeY: Math.round(gazeY * 1000) / 1000, direction };
 }
@@ -179,66 +179,79 @@ function assertTest(name, condition, details = '') {
   }
 }
 
-// 1. Neutral Forward-Facing Pose
+// 1. Neutral Forward-Facing Pose & Automatic Baseline Calibration
 const neutral = createFaceLandmarks({});
-const hp1 = estimateHeadPose(neutral);
-const eg1 = estimateEyeGaze(neutral, hp1);
-assertTest('Neutral Forward Facing: Pose is CENTER', hp1.direction === 'CENTER', `got ${hp1.direction}`);
-assertTest('Neutral Forward Facing: Gaze is CENTER', eg1.direction === 'CENTER', `got ${eg1.direction}`);
+const rawHp1 = estimateHeadPose(neutral);
+const rawEg1 = estimateEyeGaze(neutral, rawHp1);
 
-// 2. Eyes-Only Glance Left (Head straight, Irises shifted left)
-const eyeLeft = createFaceLandmarks({ leftIrisOffset: { x: -8, y: 0 }, rightIrisOffset: { x: -8, y: 0 } });
-const hp2 = estimateHeadPose(eyeLeft);
-const eg2 = estimateEyeGaze(eyeLeft, hp2);
+// Baseline Calibration (Identical to AIProctorEngine auto-calibration)
+const calib = {
+  baselineYaw: rawHp1.yaw,
+  baselinePitch: rawHp1.pitch,
+  baselineRoll: rawHp1.roll,
+  baselineGazeX: rawEg1.gazeX,
+  baselineGazeY: rawEg1.gazeY
+};
+
+const hp1 = estimateHeadPose(neutral, calib);
+const eg1 = estimateEyeGaze(neutral, hp1, calib);
+assertTest('Neutral Forward Facing: Pose is CENTER', hp1.direction === 'CENTER', `got ${hp1.direction} (pitch=${hp1.pitch}°, yaw=${hp1.yaw}°)`);
+assertTest('Neutral Forward Facing: Gaze is CENTER', eg1.direction === 'CENTER', `got ${eg1.direction} (gazeX=${eg1.gazeX}, gazeY=${eg1.gazeY})`);
+
+// 2. Eyes-Only Glance Left (Head straight, Irises shifted off-screen left by 10px on 40px eye)
+const eyeLeft = createFaceLandmarks({ leftIrisOffset: { x: -10, y: 0 }, rightIrisOffset: { x: -10, y: 0 } });
+const hp2 = estimateHeadPose(eyeLeft, calib);
+const eg2 = estimateEyeGaze(eyeLeft, hp2, calib);
 assertTest('Eyes-Only Left Glance: Head remains CENTER', hp2.direction === 'CENTER', `got ${hp2.direction}`);
-assertTest('Eyes-Only Left Glance: Gaze is LEFT', eg2.direction === 'LEFT', `got ${eg2.direction}`);
+assertTest('Eyes-Only Left Glance: Gaze is LEFT', eg2.direction === 'LEFT', `got ${eg2.direction} (gazeX=${eg2.gazeX})`);
 
-// 3. Eyes-Only Glance Right (Head straight, Irises shifted right)
-const eyeRight = createFaceLandmarks({ leftIrisOffset: { x: 8, y: 0 }, rightIrisOffset: { x: 8, y: 0 } });
-const hp3 = estimateHeadPose(eyeRight);
-const eg3 = estimateEyeGaze(eyeRight, hp3);
+// 3. Eyes-Only Glance Right (Head straight, Irises shifted off-screen right by 10px on 40px eye)
+const eyeRight = createFaceLandmarks({ leftIrisOffset: { x: 10, y: 0 }, rightIrisOffset: { x: 10, y: 0 } });
+const hp3 = estimateHeadPose(eyeRight, calib);
+const eg3 = estimateEyeGaze(eyeRight, hp3, calib);
 assertTest('Eyes-Only Right Glance: Head remains CENTER', hp3.direction === 'CENTER', `got ${hp3.direction}`);
-assertTest('Eyes-Only Right Glance: Gaze is RIGHT', eg3.direction === 'RIGHT', `got ${eg3.direction}`);
+assertTest('Eyes-Only Right Glance: Gaze is RIGHT', eg3.direction === 'RIGHT', `got ${eg3.direction} (gazeX=${eg3.gazeX})`);
 
 // 4. Eyes-Only Glance Up
 const eyeUp = createFaceLandmarks({ leftIrisOffset: { x: 0, y: -4 }, rightIrisOffset: { x: 0, y: -4 } });
-const hp4 = estimateHeadPose(eyeUp);
-const eg4 = estimateEyeGaze(eyeUp, hp4);
-assertTest('Eyes-Only Up Glance: Gaze is UP', eg4.direction === 'UP', `got ${eg4.direction}`);
+const hp4 = estimateHeadPose(eyeUp, calib);
+const eg4 = estimateEyeGaze(eyeUp, hp4, calib);
+assertTest('Eyes-Only Up Glance: Gaze is UP', eg4.direction === 'UP', `got ${eg4.direction} (gazeY=${eg4.gazeY})`);
 
 // 5. Eyes-Only Glance Down
 const eyeDown = createFaceLandmarks({ leftIrisOffset: { x: 0, y: 4 }, rightIrisOffset: { x: 0, y: 4 } });
-const hp5 = estimateHeadPose(eyeDown);
-const eg5 = estimateEyeGaze(eyeDown, hp5);
-assertTest('Eyes-Only Down Glance: Gaze is DOWN', eg5.direction === 'DOWN', `got ${eg5.direction}`);
+const hp5 = estimateHeadPose(eyeDown, calib);
+const eg5 = estimateEyeGaze(eyeDown, hp5, calib);
+assertTest('Eyes-Only Down Glance: Gaze is DOWN', eg5.direction === 'DOWN', `got ${eg5.direction} (gazeY=${eg5.gazeY})`);
 
 // 6. Head Turn Left (Nose displaced left)
 const headLeft = createFaceLandmarks({ noseOffset: { x: -30, y: 0, z: -10 } });
-const hp6 = estimateHeadPose(headLeft);
-assertTest('Head-Only Turn Left: Pose is LEFT', hp6.direction === 'LEFT', `got ${hp6.direction}`);
+const hp6 = estimateHeadPose(headLeft, calib);
+assertTest('Head-Only Turn Left: Pose is LEFT', hp6.direction === 'LEFT', `got ${hp6.direction} (yaw=${hp6.yaw}°)`);
 
 // 7. Head Turn Right (Nose displaced right)
 const headRight = createFaceLandmarks({ noseOffset: { x: 30, y: 0, z: 10 } });
-const hp7 = estimateHeadPose(headRight);
-assertTest('Head-Only Turn Right: Pose is RIGHT', hp7.direction === 'RIGHT', `got ${hp7.direction}`);
+const hp7 = estimateHeadPose(headRight, calib);
+assertTest('Head-Only Turn Right: Pose is RIGHT', hp7.direction === 'RIGHT', `got ${hp7.direction} (yaw=${hp7.yaw}°)`);
 
 // 8. Head Pitch Up & Down
 const headPitchUp = createFaceLandmarks({ noseOffset: { x: 0, y: -25, z: 0 } });
-const hp8a = estimateHeadPose(headPitchUp);
-assertTest('Head Pitch Up: Pose is UP', hp8a.direction === 'UP', `got ${hp8a.direction}`);
+const hp8a = estimateHeadPose(headPitchUp, calib);
+assertTest('Head Pitch Up: Pose is UP', hp8a.direction === 'UP', `got ${hp8a.direction} (pitch=${hp8a.pitch}°)`);
 
 const headPitchDown = createFaceLandmarks({ noseOffset: { x: 0, y: 25, z: 0 } });
-const hp8b = estimateHeadPose(headPitchDown);
-assertTest('Head Pitch Down: Pose is DOWN', hp8b.direction === 'DOWN', `got ${hp8b.direction}`);
+const hp8b = estimateHeadPose(headPitchDown, calib);
+assertTest('Head Pitch Down: Pose is DOWN', hp8b.direction === 'DOWN', `got ${hp8b.direction} (pitch=${hp8b.pitch}°)`);
 
 // 9. Natural Blink (EAR < 0.16)
 const blink = createFaceLandmarks({ eyeOpenness: 0.08 });
-const eg9 = estimateEyeGaze(blink, hp1);
+const eg9 = estimateEyeGaze(blink, hp1, calib);
 assertTest('Natural Blink: Recognized as BLINK', eg9.isBlinking === true && eg9.direction === 'BLINK', `got blinking=${eg9.isBlinking}, dir=${eg9.direction}`);
 
 // 10. Candidate Position Invariance (Candidate sitting at x=+120px in frame)
 const shiftedFace = createFaceLandmarks({ globalOffset: { x: 120, y: -60 } });
-const hp10 = estimateHeadPose(shiftedFace);
+const hp10 = estimateHeadPose(shiftedFace, calib);
+assertTest('Frame-Position Invariance: Pitch and Yaw remain CENTER when candidate shifts in frame', hp10.direction === 'CENTER', `got ${hp10.direction}`);
 assertTest('Frame-Position Invariance: Pitch and Yaw remain CENTER when candidate shifts in frame', hp10.direction === 'CENTER', `got ${hp10.direction}`);
 
 // 11. Throughput & Latency Benchmark
