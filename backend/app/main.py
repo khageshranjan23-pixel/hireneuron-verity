@@ -96,6 +96,11 @@ async def invalid(request,exc):
  return JSONResponse(status_code=409,content={'detail':str(exc)})
 @app.get('/health')
 def health():return {'status':'ok','mode':'prototype','model_configured':bool(os.getenv('GEMINI_MODEL')),'media_configured':bool(os.getenv('LIVEKIT_URL'))}
+@app.get('/tunnel')
+def tunnel():
+ from pathlib import Path
+ p = Path(__file__).resolve().parent.parent.parent / "data" / "tunnel_url.txt"
+ return {'url': p.read_text().strip() if p.exists() else ''}
 @app.post('/sessions')
 def create(cfg:Config,a=Depends(auth)):
  allow(a,None,['recruiter']);s=core.new_session(cfg.model_dump())

@@ -73,26 +73,12 @@ def prepare():
     # 4. Blueprint is already frozen by default in core.new_session
     final_token = cand_token
 
-    # Auto-detect active tunnel URL from logs if present
-    tunnel_url = "https://adelaide-managing-everyone-peers.trycloudflare.com"
-    try:
-        import glob
-        logs = glob.glob(r"C:\Users\khage\.gemini\antigravity\brain\31eaaf63-dd8e-467d-b6c7-4577b34d0bb5\.system_generated\tasks\task-*.log")
-        for lf in sorted(logs, key=os.path.getmtime, reverse=True):
-            content = Path(lf).read_text(errors='ignore')
-            if "trycloudflare.com" in content:
-                for line in content.splitlines():
-                    if "trycloudflare.com" in line and "https://" in line:
-                        for word in line.split():
-                            if word.startswith("https://") and "trycloudflare.com" in word:
-                                tunnel_url = word.strip().strip("|").strip()
-                                break
-                        if tunnel_url:
-                            break
-                if tunnel_url:
-                    break
-    except Exception:
-        pass
+    # Auto-detect active tunnel URL from data/tunnel_url.txt or logs
+    tunnel_file = ROOT / "data" / "tunnel_url.txt"
+    if tunnel_file.exists():
+        tunnel_url = tunnel_file.read_text().strip()
+    else:
+        tunnel_url = "https://clone-ruling-threaded-sale.trycloudflare.com"
     candidate_url = f"{tunnel_url}/interview?sid={sid}&token={final_token}"
     local_candidate_url = f"http://localhost:3000/interview?sid={sid}&token={final_token}"
 

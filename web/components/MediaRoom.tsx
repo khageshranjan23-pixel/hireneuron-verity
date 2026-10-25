@@ -49,9 +49,10 @@ export default function MediaRoom({
   const [motionLevel, setMotionLevel] = useState(0);
 
   // Live telemetry metrics
-  const [gazeStatus, setGazeStatus] = useState<'focused' | 'away'>('focused');
-  const [faceStatus, setFaceStatus] = useState<'normal' | 'multiple' | 'unclear' | 'checking' | 'calibrating' | 'lost' | 'absent'>('checking');
-  const [audioStatus, setAudioStatus] = useState<'clean' | 'noisy'>('clean');
+  const [gazeStatus, setGazeStatus] = useState<'focused' | 'away' | 'reading'>('focused');
+  const [faceStatus, setFaceStatus] = useState<'normal' | 'multiple' | 'unclear' | 'checking' | 'calibrating' | 'lost' | 'absent' | 'obscured'>('checking');
+  const [audioStatus, setAudioStatus] = useState<'clean' | 'noisy' | 'multi-voice'>('clean');
+  const [speechStatus, setSpeechStatus] = useState<'quiet' | 'speaking' | 'coaching-suspect'>('quiet');
   const [calibrateCount, setCalibrateCount] = useState(0);
 
   // Node references for AIProctorEngine
@@ -110,6 +111,8 @@ export default function MediaRoom({
     // Map the robust gated presence state machine, NOT raw single-frame zero!
     if (metrics.presenceState === 'PERSON_OUT_OF_VIEW_CONFIRMED') {
       setFaceStatus('absent');
+    } else if (metrics.presenceState === 'FACE_PARTIALLY_OBSCURED') {
+      setFaceStatus('obscured');
     } else if (metrics.presenceState === 'FACE_NOT_VISIBLE') {
       setFaceStatus('unclear');
     } else if (metrics.presenceState === 'TRACKING_UNCERTAIN') {
@@ -123,8 +126,33 @@ export default function MediaRoom({
     } else {
       setFaceStatus('normal');
     }
-    setGazeStatus(metrics.gaze === 'focused' ? 'focused' : 'away');
-    setAudioStatus(metrics.audio === 'clean' ? 'clean' : 'noisy');
+
+    // v2: Enhanced gaze status with reading pattern detection
+    if (metrics.readingPattern) {
+      setGazeStatus('reading');
+    } else if (metrics.gaze === 'focused') {
+      setGazeStatus('focused');
+    } else {
+      setGazeStatus('away');
+    }
+
+    // v2: Enhanced audio status with multiple voice detection
+    if (metrics.multipleVoices) {
+      setAudioStatus('multi-voice');
+    } else if (metrics.audio === 'clean') {
+      setAudioStatus('clean');
+    } else {
+      setAudioStatus('noisy');
+    }
+
+    // v2: Speech/coaching status
+    if (metrics.speakingWhileAway) {
+      setSpeechStatus('coaching-suspect');
+    } else if (metrics.isSpeaking) {
+      setSpeechStatus('speaking');
+    } else {
+      setSpeechStatus('quiet');
+    }
   }, []);
 
   useEffect(() => {
@@ -230,6 +258,20 @@ export default function MediaRoom({
           } else if (msg.event === 'FRAME_COVERAGE_GAP') {
             text = 'Camera connection temporarily interrupted';
             triggerAlert(msg.event, text, 'OBSERVED_EVENT');
+          } else if (msg.event === 'READING_PATTERN') {
+            text = 'Suspicious reading pattern detected — please focus on the interview';
+            triggerAlert(msg.event, text, msg.severity || 'NEEDS_REVIEW');
+          } else if (msg.event === 'SPEAKING_WHILE_AWAY') {
+            text = 'Speaking while looking away — possible coaching detected';
+            triggerAlert(msg.event, text, msg.severity || 'NEEDS_REVIEW');
+          } else if (msg.event === 'FACE_OBSCURED') {
+            text = 'Face partially covered — please ensure full face is visible';
+            setFaceStatus('obscured');
+            triggerAlert(msg.event, text, msg.severity || 'OBSERVED_EVENT');
+          } else if (msg.event === 'MULTIPLE_VOICES') {
+            text = 'Multiple voices detected — possible coaching or assistance';
+            setAudioStatus('multi-voice');
+            triggerAlert(msg.event, text, msg.severity || 'NEEDS_REVIEW');
           }
         }
       } catch (_) {}
@@ -439,18 +481,9 @@ export default function MediaRoom({
         )}
       </div>
 
-      {/* Embedded High-Precision AI Proctoring & Browser Violation Watchdog */}
+      {/* Browser violation watchdog */}
       {!phone && !viewer && (
-        <>
-          <BrowserProctor onViolation={handleBrowserViolation} />
-
-          <AIProctorEngine
-            mediaStream={localMediaStream}
-            onViolation={handleProctorViolation}
-            onTelemetryUpdate={handleTelemetryUpdate}
-            calibrateTrigger={calibrateCount}
-          />
-        </>
+        <BrowserProctor onViolation={handleBrowserViolation} />
       )}
 
       {/* Real-time On-Screen Proctoring HUD Alert Overlay */}
@@ -460,10 +493,14 @@ export default function MediaRoom({
             <div className={`proctoringAlertPill ${currentAlert.severity.toLowerCase()}`}>
               {currentAlert.type === 'MULTIPLE_PERSONS' ? (
                 <Users size={16} className="alertPillIcon spinPulse" />
-              ) : currentAlert.type === 'FACE_ABSENT' || currentAlert.type === 'GAZE_DEVIATION' || currentAlert.type === 'HEAD_TURN_PROLONGED' ? (
+              ) : currentAlert.type === 'FACE_ABSENT' || currentAlert.type === 'GAZE_DEVIATION' || currentAlert.type === 'HEAD_TURN_PROLONGED' || currentAlert.type === 'FACE_OBSCURED' ? (
                 <EyeOff size={16} className="alertPillIcon" />
-              ) : currentAlert.type === 'BACKGROUND_NOISE' ? (
+              ) : currentAlert.type === 'BACKGROUND_NOISE' || currentAlert.type === 'MULTIPLE_VOICES' ? (
                 <VolumeX size={16} className="alertPillIcon" />
+              ) : currentAlert.type === 'READING_PATTERN' || currentAlert.type === 'SPEAKING_WHILE_AWAY' ? (
+                <Eye size={16} className="alertPillIcon" />
+              ) : currentAlert.type === 'ELECTRONIC_DEVICE_DETECTED' ? (
+                <Smartphone size={16} className="alertPillIcon" style={{ color: '#ef4444' }} />
               ) : (
                 <Activity size={16} className="alertPillIcon" />
               )}
@@ -481,7 +518,18 @@ export default function MediaRoom({
         </div>
       )}
 
-      <div className="feedsGrid" ref={host}></div>
+      {/* Video feeds grid — AIProctorEngine overlays here */}
+      <div className="feedsGrid" ref={host} style={{ position: 'relative' }}>
+        {/* AI Proctor Engine renders its canvas overlay INSIDE the feeds grid */}
+        {!phone && !viewer && localMediaStream && (
+          <AIProctorEngine
+            mediaStream={localMediaStream}
+            onViolation={handleProctorViolation}
+            onTelemetryUpdate={handleTelemetryUpdate}
+            calibrateTrigger={calibrateCount}
+          />
+        )}
+      </div>
 
       {/* Real-time Telemetry Status Matrix */}
       {!phone && !viewer && (
@@ -501,19 +549,38 @@ export default function MediaRoom({
                 ? 'Calibrating…'
                 : faceStatus === 'lost'
                 ? 'Camera Interrupted'
+                : faceStatus === 'obscured'
+                ? '⚠ Face Covered'
                 : 'Return to View'}
             </span>
           </div>
 
-          <div className={`telemetryPill ${gazeStatus === 'focused' ? 'good' : 'info'}`}>
+          <div className={`telemetryPill ${gazeStatus === 'focused' ? 'good' : gazeStatus === 'reading' ? 'warning' : 'info'}`}>
             <Eye size={12} />
-            <span>{gazeStatus === 'focused' ? 'Gaze: Centered' : 'Gaze: Off-Screen'}</span>
+            <span>
+              {gazeStatus === 'focused' ? 'Gaze: Centered'
+                : gazeStatus === 'reading' ? '⚠ Reading Pattern'
+                : 'Gaze: Off-Screen'}
+            </span>
           </div>
 
-          <div className={`telemetryPill ${audioStatus === 'clean' ? 'good' : 'warning'}`}>
+          <div className={`telemetryPill ${audioStatus === 'clean' ? 'good' : audioStatus === 'multi-voice' ? 'warning' : 'info'}`}>
             <Volume2 size={12} />
-            <span>{audioStatus === 'clean' ? 'Audio: Clean' : 'Audio: High Noise'}</span>
+            <span>
+              {audioStatus === 'clean' ? 'Audio: Clean'
+                : audioStatus === 'multi-voice' ? '⚠ Multiple Voices'
+                : 'Audio: High Noise'}
+            </span>
           </div>
+
+          {speechStatus !== 'quiet' && (
+            <div className={`telemetryPill ${speechStatus === 'coaching-suspect' ? 'warning' : 'info'}`}>
+              <Activity size={12} />
+              <span>
+                {speechStatus === 'coaching-suspect' ? '⚠ Speaking Away' : 'Speaking'}
+              </span>
+            </div>
+          )}
 
           <button
             type="button"

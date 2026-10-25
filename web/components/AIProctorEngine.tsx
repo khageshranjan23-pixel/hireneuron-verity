@@ -1,35 +1,25 @@
 'use client';
+/**
+ * AIProctorEngine v5 — Z-depth 3D Head Pose + Robust Calibration
+ *
+ * KEY FIXES over v4:
+ * - Uses MediaPipe 3D z-coordinates for yaw/pitch (no false positives from camera angle)
+ * - 50-frame auto-calibration with clear UI countdown — ZERO alerts until calibrated
+ * - Thresholds doubled — only flags sustained, obvious deviations
+ * - Calibrate button always visible and prominent
+ * - No violations fire during calibration or for 1.5s after
+ */
 
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import * as tf from '@tensorflow/tfjs';
-import '@tensorflow/tfjs-backend-webgl';
-import * as faceLandmarks from '@tensorflow-models/face-landmarks-detection';
-import * as faceDetection from '@tensorflow-models/face-detection';
-import {
-  estimateHeadPose,
-  estimateEyeGaze,
-  HeadPoseResult,
-  EyeGazeResult,
-  ProctorCalibration,
-  DEFAULT_CALIBRATION,
-  Keypoint3D
-} from '../lib/proctorGeometry';
-import { FacePresenceGate, PresenceState, PresenceDecision } from '../lib/facePresenceGate';
-import ProctorDiagnostics, { DiagnosticsMetrics } from './ProctorDiagnostics';
 
 export interface ProctorTelemetry {
-  presenceState: PresenceState;
-  presenceMessage: string;
-  confirmedOutOfView: boolean;
-  faces: number;
-  gaze: 'focused' | 'away' | 'blink' | 'unknown';
-  headPose: 'centered' | 'turned';
-  audio: 'clean' | 'noisy';
-  yaw: number;
-  pitch: number;
-  roll: number;
-  gazeX: number;
-  gazeY: number;
+  presenceState: string; presenceMessage: string; confirmedOutOfView: boolean;
+  faces: number; gaze: 'focused' | 'away' | 'blink' | 'unknown';
+  headPose: 'centered' | 'turned'; audio: 'clean' | 'noisy';
+  yaw: number; pitch: number; roll: number; gazeX: number; gazeY: number;
+  lookAwayState?: string; lookAwayDurationMs?: number; lookAwayViolationCount?: number;
+  readingPattern?: boolean; speakingWhileAway?: boolean;
+  isSpeaking?: boolean; mouthOpen?: boolean; multipleVoices?: boolean;
 }
 
 export interface AIProctorEngineProps {
@@ -39,787 +29,683 @@ export interface AIProctorEngineProps {
   calibrateTrigger?: number;
 }
 
-/**
- * Lightweight canvas-based torso / upper-body silhouette detector.
- * Samples the central-lower portion of the video frame to distinguish an active person
- * from an empty chair or blank wall background when facial landmark models lose confidence.
- */
-function checkTorsoPersonVisible(video: HTMLVideoElement): boolean | null {
-  try {
-    if (!video || video.readyState < 2 || video.videoWidth === 0) return null;
-    const vw = video.videoWidth;
-    const vh = video.videoHeight;
-    const sampleCanvas = document.createElement('canvas');
-    sampleCanvas.width = 48;
-    sampleCanvas.height = 36;
-    const ctx = sampleCanvas.getContext('2d', { willReadFrequently: true });
-    if (!ctx) return null;
+// ─── Landmark indices (MediaPipe 478-point FaceMesh with iris) ───────────────
+const LM = {
+  NOSE: 1, FOREHEAD: 10, CHIN: 152,
+  L_EAR: 234, R_EAR: 454,
+  L_EYE_OUT: 33, L_EYE_IN: 133, L_EYE_TOP: 159, L_EYE_BOT: 145, L_IRIS: 468,
+  R_EYE_IN: 362, R_EYE_OUT: 263, R_EYE_TOP: 386, R_EYE_BOT: 374, R_IRIS: 473,
+  MOUTH_TOP: 13, MOUTH_BOT: 14, MOUTH_L: 61, MOUTH_R: 291,
+};
 
-    // Draw the bottom-center 60% of frame where candidate shoulders & torso reside
-    ctx.drawImage(video, vw * 0.2, vh * 0.4, vw * 0.6, vh * 0.6, 0, 0, 48, 36);
-    const imgData = ctx.getImageData(0, 0, 48, 36).data;
+// ─── Thresholds (generous to avoid false positives) ──────────────────────────
+const HEAD_YAW_DEG   = 22;   // degrees — only flag clear turns
+const HEAD_PITCH_DEG = 18;   // degrees — only flag clear nods
+const GAZE_H         = 0.18; // iris normalized offset
+const GAZE_V         = 0.18;
+const BLINK_EAR      = 0.18;
 
-    let sum = 0;
-    let sumSq = 0;
-    const n = imgData.length / 4;
-    for (let i = 0; i < imgData.length; i += 4) {
-      const lum = 0.299 * imgData[i] + 0.587 * imgData[i + 1] + 0.114 * imgData[i + 2];
-      sum += lum;
-      sumSq += lum * lum;
-    }
-    const mean = sum / n;
-    const variance = (sumSq / n) - (mean * mean);
-    const stdDev = Math.sqrt(Math.max(0, variance));
+// Direction-specific look-away trigger times (ms) — relaxed
+const DIR_MS: Record<string, number> = {
+  DOWN: 600, DOWN_LEFT: 600, DOWN_RIGHT: 600,
+  LEFT: 800, RIGHT: 800,
+  UP: 1200, UP_LEFT: 1000, UP_RIGHT: 1000,
+  CENTER: 99999,
+};
+const SEVERE_MS = 4000;
+const CALIBRATION_FRAMES = 50; // frames to collect before activating
 
-    // A human torso / clothing generates high contrast and texture (stdDev > 14).
-    // An empty uniform wall / empty room has low stdDev (< 10).
-    return stdDev > 14;
-  } catch {
-    return null;
-  }
+// ─── Types ────────────────────────────────────────────────────────────────────
+interface KP { x: number; y: number; z?: number }
+
+// ─── 3D Head Pose using Z-depth (most reliable in browser) ───────────────────
+function getPose(lm: KP[]) {
+  const lEar = lm[LM.L_EAR], rEar = lm[LM.R_EAR];
+  const fore  = lm[LM.FOREHEAD], chin = lm[LM.CHIN];
+  const lEyeO = lm[LM.L_EYE_OUT], rEyeO = lm[LM.R_EYE_OUT];
+  const nose  = lm[LM.NOSE];
+  if (!lEar || !rEar || !fore || !chin || !nose) return null;
+
+  // ── Yaw: left-right rotation ──────────────────────────────────────────────
+  // Primary: ear Z-depth difference (most stable signal)
+  // When head turns right → left ear Z increases (further), right ear Z decreases (closer)
+  const earZ_L = lEar.z ?? 0, earZ_R = rEar.z ?? 0;
+  const interEarPx = Math.hypot(rEar.x - lEar.x, rEar.y - lEar.y) || 1;
+  // Scale z by inter-ear pixel distance to normalize for distance from camera
+  const yawFromZ = ((earZ_R - earZ_L) / interEarPx) * 140;
+
+  // Secondary: nose X offset from eye midpoint (2D geometry)
+  const eyeMidX = lEyeO && rEyeO ? (lEyeO.x + rEyeO.x) / 2 : (lEar.x + rEar.x) / 2;
+  const noseOffX = (nose.x - eyeMidX) / (interEarPx || 1);
+  const yawFrom2D = noseOffX * 80; // weaker signal
+
+  // Blend: Z-depth is primary (70%), 2D geometry backup (30%)
+  const yaw = yawFromZ * 0.7 + yawFrom2D * 0.3;
+
+  // ── Pitch: up-down rotation ───────────────────────────────────────────────
+  // Primary: forehead vs chin Z-depth difference
+  // When looking down → forehead comes forward (z decreases), chin goes back
+  const foreZ = fore.z ?? 0, chinZ = chin.z ?? 0;
+  const faceHeightPx = Math.hypot(chin.x - fore.x, chin.y - fore.y) || 1;
+  const pitchFromZ = ((foreZ - chinZ) / faceHeightPx) * 140;
+
+  // Secondary: nose vertical position on face axis
+  const noseAlongFace = ((nose.x - fore.x) * (chin.x - fore.x) + (nose.y - fore.y) * (chin.y - fore.y)) / (faceHeightPx * faceHeightPx);
+  const pitchFrom2D = (noseAlongFace - 0.48) * 55;
+
+  const pitch = pitchFromZ * 0.7 + pitchFrom2D * 0.3;
+
+  // ── Roll ─────────────────────────────────────────────────────────────────
+  const roll = lEyeO && rEyeO
+    ? Math.atan2(rEyeO.y - lEyeO.y, rEyeO.x - lEyeO.x) * (180 / Math.PI)
+    : 0;
+
+  return { yaw, pitch, roll };
 }
 
-export default function AIProctorEngine({
-  mediaStream,
-  onViolation,
-  onTelemetryUpdate,
-  calibrateTrigger
-}: AIProctorEngineProps) {
-  const videoRef = useRef<HTMLVideoElement | null>(null);
+// ─── Direction classifier ─────────────────────────────────────────────────────
+function classifyDir(yaw: number, pitch: number): string {
+  const ay = Math.abs(yaw), ap = Math.abs(pitch);
+  if (ay > HEAD_YAW_DEG && ap > HEAD_PITCH_DEG * 0.6) {
+    return (pitch < 0 ? 'DOWN' : 'UP') + (yaw > 0 ? '_RIGHT' : '_LEFT');
+  }
+  if (ay > HEAD_YAW_DEG) return yaw > 0 ? 'RIGHT' : 'LEFT';
+  if (ap > HEAD_PITCH_DEG) return pitch < 0 ? 'DOWN' : 'UP';
+  return 'CENTER';
+}
+
+// ─── Eye gaze using iris position ────────────────────────────────────────────
+function getGaze(lm: KP[], adjYaw: number, adjPitch: number) {
+  const lOut = lm[LM.L_EYE_OUT], lIn = lm[LM.L_EYE_IN];
+  const lTop = lm[LM.L_EYE_TOP], lBot = lm[LM.L_EYE_BOT], lIris = lm[LM.L_IRIS];
+  const rIn  = lm[LM.R_EYE_IN],  rOut = lm[LM.R_EYE_OUT];
+  const rTop = lm[LM.R_EYE_TOP], rBot = lm[LM.R_EYE_BOT], rIris = lm[LM.R_IRIS];
+
+  if (!lOut || !lIn || !lTop || !lBot || !lIris || !rIn || !rOut || !rTop || !rBot || !rIris) {
+    return { gazeX: 0, gazeY: 0, dir: 'UNKNOWN', blink: false };
+  }
+
+  const lW = Math.hypot(lIn.x-lOut.x, lIn.y-lOut.y) || 1;
+  const rW = Math.hypot(rOut.x-rIn.x, rOut.y-rIn.y) || 1;
+  const lH = Math.hypot(lBot.x-lTop.x, lBot.y-lTop.y) || 1;
+  const rH = Math.hypot(rBot.x-rTop.x, rBot.y-rTop.y) || 1;
+  const lEAR = lH / lW, rEAR = rH / rW;
+
+  if (lEAR < BLINK_EAR && rEAR < BLINK_EAR) {
+    return { gazeX: 0, gazeY: 0, dir: 'BLINK', blink: true };
+  }
+
+  const rawX = ((lIris.x - lOut.x) / lW - 0.5 + (rIris.x - rIn.x) / rW - 0.5) / 2;
+  const rawY = ((lIris.y - lTop.y) / lH - 0.5 + (rIris.y - rTop.y) / rH - 0.5) / 2;
+
+  // Head-compensate so eye-only glances are measured, not head turns
+  const gazeX = rawX - Math.sin((adjYaw   * Math.PI) / 180) * 0.10;
+  const gazeY = rawY - Math.sin((adjPitch * Math.PI) / 180) * 0.08;
+
+  let dir = 'CENTER';
+  const ax = Math.abs(gazeX), ay2 = Math.abs(gazeY);
+  if (ax > GAZE_H && ay2 > GAZE_V) dir = (gazeY > 0 ? 'DOWN' : 'UP') + (gazeX > 0 ? '_RIGHT' : '_LEFT');
+  else if (ax > GAZE_H) dir = gazeX > 0 ? 'RIGHT' : 'LEFT';
+  else if (ay2 > GAZE_V) dir = gazeY > 0 ? 'DOWN' : 'UP';
+
+  return { gazeX, gazeY, dir, blink: false };
+}
+
+// ─── Mouth ────────────────────────────────────────────────────────────────────
+function getMouth(lm: KP[]) {
+  const t = lm[LM.MOUTH_TOP], b = lm[LM.MOUTH_BOT], l = lm[LM.MOUTH_L], r = lm[LM.MOUTH_R];
+  if (!t || !b || !l || !r) return { open: false, speaking: false };
+  const w = Math.hypot(r.x-l.x, r.y-l.y) || 1;
+  const lip = Math.hypot(b.x-t.x, b.y-t.y) / w;
+  return { open: lip > 0.38, speaking: lip > 0.13 };
+}
+
+// ─── Reading pattern (horizontal oscillation) ─────────────────────────────────
+class ReadingDetector {
+  private hist: { t: number; dir: string }[] = [];
+  update(t: number, dir: string): boolean {
+    if (['LEFT','RIGHT','DOWN_LEFT','DOWN_RIGHT'].includes(dir)) this.hist.push({ t, dir });
+    this.hist = this.hist.filter(e => t - e.t < 4000);
+    let osc = 0;
+    for (let i = 1; i < this.hist.length; i++) {
+      const p = this.hist[i-1].dir, c = this.hist[i].dir;
+      const L = (d: string) => d === 'LEFT' || d === 'DOWN_LEFT';
+      const R = (d: string) => d === 'RIGHT' || d === 'DOWN_RIGHT';
+      if ((L(p) && R(c)) || (R(p) && L(c))) osc++;
+    }
+    return osc >= 4; // raised from 3 to reduce false positives
+  }
+  reset() { this.hist = []; }
+}
+
+// ─── Main Component ───────────────────────────────────────────────────────────
+export default function AIProctorEngine({ mediaStream, onViolation, onTelemetryUpdate, calibrateTrigger }: AIProctorEngineProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const isMounted = useRef(true);
 
-  // Model & Inference Lifecycle Refs
-  const detectorRef = useRef<faceLandmarks.FaceLandmarksDetector | null>(null);
-  const fallbackDetectorRef = useRef<faceDetection.FaceDetector | null>(null);
-  const isInitializingRef = useRef<boolean>(false);
-  const isInferenceBusyRef = useRef<boolean>(false);
-  const isMountedRef = useRef<boolean>(true);
-  const modelInitCountRef = useRef<number>(0);
+  // Calibration
+  const calibSamples  = useRef<{ yaw: number; pitch: number; gazeX: number; gazeY: number }[]>([]);
+  const calibDone     = useRef(false);
+  const calibBaseline = useRef({ yaw: 0, pitch: 0, gazeX: 0, gazeY: 0 });
+  const calibDoneAt   = useRef(0); // timestamp when calibration completed
+  const manualCalib   = useRef(false);
+  const manualSamples = useRef<{ yaw: number; pitch: number; gazeX: number; gazeY: number }[]>([]);
 
-  // Presence State Machine Ref
-  const presenceGateRef = useRef<FacePresenceGate | null>(null);
+  // Look-away tracking
+  const awayStart     = useRef<number | null>(null);
+  const activeDir     = useRef('CENTER');
+  const violations    = useRef(0);
+  const readDet       = useRef(new ReadingDetector());
+  const speakAwayAt   = useRef<number | null>(null);
 
-  // Stable Callback Refs to prevent model teardown on parent rerenders
-  const onViolationRef = useRef(onViolation);
-  onViolationRef.current = onViolation;
-  const onTelemetryRef = useRef(onTelemetryUpdate);
-  onTelemetryRef.current = onTelemetryUpdate;
+  // Face presence
+  const absentStart   = useRef<number | null>(null);
+  const multiFaceAt   = useRef<number | null>(null);
+  const emptyStreak   = useRef(0);
 
-  // Performance & Measurement Instrumentation Refs
-  const cameraFrameTimesRef = useRef<number[]>([]);
-  const inferenceTimesRef = useRef<number[]>([]);
-  const latencySamplesRef = useRef<number[]>([]);
-  const droppedFramesRef = useRef<number>(0);
-  const lastAnalyzedTimeRef = useRef<number>(Date.now());
-  const lastViolationDispatchRef = useRef<Map<string, number>>(new Map());
-  const lastVideoTimeRef = useRef<number>(0);
+  // Audio
+  const multiVoiceStreak = useRef(0);
 
-  // Sustained Movement Timers (to separate brief thinking glances from prolonged deviations)
-  const headTurnStartRef = useRef<number | null>(null);
-  const gazeDevStartRef = useRef<number | null>(null);
-  const multipleFacesStartRef = useRef<number | null>(null);
+  // Electronic Device Detection
+  const detectedDevicesRef = useRef<{ bbox: [number, number, number, number]; class: string; score: number }[]>([]);
 
-  // Calibration state
-  const calibrationRef = useRef<ProctorCalibration>({ ...DEFAULT_CALIBRATION });
-  const calibrationSamplesRef = useRef<{ yaw: number; pitch: number; roll: number; gazeX: number; gazeY: number }[]>([]);
-  const isCalibratingRef = useRef<boolean>(false);
-  const autoCalibratedRef = useRef<boolean>(false);
-  const autoCalibWarmupRef = useRef<{ yaw: number; pitch: number; roll: number; gazeX: number; gazeY: number }[]>([]);
+  // Cooldowns
+  const lastFired = useRef<Map<string, number>>(new Map());
 
-  // Calm UI Warning & Diagnostics State
-  const [warning, setWarning] = useState<string>('');
-  const [warningType, setWarningType] = useState<string>('');
-  const warningExpiryRef = useRef<number>(0);
-  const [overlayEnabled, setOverlayEnabled] = useState<boolean>(false);
+  // UI state
+  const [status,       setStatus]       = useState<'loading' | 'running' | 'error'>('loading');
+  const [calibFrames,  setCalibFrames]  = useState(0); // 0..CALIBRATION_FRAMES
+  const [warn,         setWarn]         = useState('');
+  const [warnSev,      setWarnSev]      = useState('');
+  const warnExpiry = useRef(0);
 
-  // Diagnostics HUD State
-  const [diagMetrics, setDiagMetrics] = useState<DiagnosticsMetrics>({
-    cameraFps: 0,
-    inferenceFps: 0,
-    latencyMs: 0,
-    p50LatencyMs: 0,
-    p95LatencyMs: 0,
-    droppedFrames: 0,
-    modelInitCount: 0,
-    lastAnalyzedAgeMs: 0,
-    modelReady: false,
-    activeFaceCount: 0,
-    presenceState: 'INITIALIZING',
-    presenceMessage: 'Camera monitoring starting…',
-    confirmedOutOfView: false,
-    headPose: null,
-    eyeGaze: null,
-    activeObservation: null,
-    missReason: null,
-    overlayEnabled: false,
-    calibrationActive: false
-  });
+  const onVioRef = useRef(onViolation); onVioRef.current = onViolation;
+  const onTelRef = useRef(onTelemetryUpdate); onTelRef.current = onTelemetryUpdate;
 
-  // Snapshot Capture Helper
-  const captureSnapshot = useCallback((): string => {
+  // ── helpers ────────────────────────────────────────────────────────────────
+  const snap = useCallback(() => {
     try {
-      const video = videoRef.current;
-      if (!video || video.readyState < 2) return '';
-      const canvas = document.createElement('canvas');
-      canvas.width = 320;
-      canvas.height = 240;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return '';
-      ctx.drawImage(video, 0, 0, 320, 240);
-      return canvas.toDataURL('image/jpeg', 0.85).split(',')[1] || '';
-    } catch {
-      return '';
-    }
+      const c = document.createElement('canvas'); c.width = 320; c.height = 240;
+      const v = document.querySelector('video[data-proctor]') as HTMLVideoElement | null;
+      if (!v || v.readyState < 2) return '';
+      c.getContext('2d')?.drawImage(v, 0, 0, 320, 240);
+      return c.toDataURL('image/jpeg', 0.78).split(',')[1] || '';
+    } catch { return ''; }
   }, []);
 
-  // Visual Notification Helper (Polite, non-alarming)
-  const triggerVisualNotice = useCallback((msg: string, type: string, holdMs = 2500) => {
-    setWarning(msg);
-    setWarningType(type);
-    warningExpiryRef.current = Date.now() + holdMs;
-  }, []);
-
-  // Throttled Violation Dispatcher (3.0s debounce per type)
-  const dispatchViolation = useCallback((type: string, message: string, severity: 'NEEDS_REVIEW' | 'NEEDS_REVIEW_HIGH' | 'OBSERVED_EVENT') => {
+  const fire = useCallback((type: string, msg: string, sev: 'NEEDS_REVIEW' | 'NEEDS_REVIEW_HIGH' | 'OBSERVED_EVENT', coolMs = 5000) => {
+    // NEVER fire before calibration + 1.5s grace
+    if (!calibDone.current || performance.now() - calibDoneAt.current < 1500) return;
     const now = Date.now();
-    const lastTime = lastViolationDispatchRef.current.get(type) || 0;
-    if (now - lastTime > 3000) {
-      lastViolationDispatchRef.current.set(type, now);
-      const snapshot = captureSnapshot();
-      onViolationRef.current?.(type, message, severity, snapshot);
-    }
-  }, [captureSnapshot]);
+    if (now - (lastFired.current.get(type) || 0) < coolMs) return;
+    lastFired.current.set(type, now);
+    onVioRef.current?.(type, msg, sev, snap());
+  }, [snap]);
 
-  // Calibration Trigger
-  const triggerCalibration = useCallback(() => {
-    calibrationSamplesRef.current = [];
-    isCalibratingRef.current = true;
-    triggerVisualNotice('🎯 Calibrating neutral straight-ahead pose…', 'CALIBRATING', 2000);
-  }, [triggerVisualNotice]);
+  const showWarn = useCallback((msg: string, sev: string, ms = 3000) => {
+    if (!calibDone.current) return; // no warnings during calibration
+    setWarn(msg); setWarnSev(sev);
+    warnExpiry.current = Date.now() + ms;
+  }, []);
 
-  const resetCalibration = useCallback(() => {
-    calibrationRef.current = { ...DEFAULT_CALIBRATION };
-    autoCalibratedRef.current = false;
-    autoCalibWarmupRef.current = [];
-    triggerVisualNotice('🔄 Posture baseline reset. Looking naturally at screen…', 'CALIBRATING', 2000);
-  }, [triggerVisualNotice]);
+  const triggerRecalibrate = useCallback(() => {
+    manualSamples.current = [];
+    manualCalib.current = true;
+    calibDone.current = false;
+    setCalibFrames(0);
+    setWarn(''); setWarnSev('');
+    warnExpiry.current = 0;
+    lastFired.current.clear();
+  }, []);
 
-  // External Calibration Trigger from parent UI
   useEffect(() => {
-    if (calibrateTrigger && calibrateTrigger > 0) {
-      triggerCalibration();
-    }
-  }, [calibrateTrigger, triggerCalibration]);
+    if (calibrateTrigger && calibrateTrigger > 0) triggerRecalibrate();
+  }, [calibrateTrigger, triggerRecalibrate]);
 
-  // SECTION 1: DETECTOR LIFECYCLE (STABLE, INITIALIZES ONCE PER STREAM)
+  // ── Main engine ────────────────────────────────────────────────────────────
   useEffect(() => {
-    isMountedRef.current = true;
+    isMounted.current = true;
+    if (!mediaStream || mediaStream.getVideoTracks().length === 0) return;
 
-    if (!mediaStream || mediaStream.getVideoTracks().length === 0) {
-      return;
-    }
+    let dead = false;
+    let audioCtx: AudioContext | null = null;
+    let audioInterval: ReturnType<typeof setInterval> | null = null;
+    let objectInterval: ReturnType<typeof setInterval> | null = null;
+    let rafHandle = 0;
 
-    let isCancelled = false;
-    let videoCallbackHandle: number | null = null;
-    let animFrameHandle: number | null = null;
-    let audioContext: AudioContext | null = null;
-    let audioCheckInterval: NodeJS.Timeout | null = null;
+    // Hidden video for inference
+    const video = document.createElement('video');
+    video.setAttribute('data-proctor', '1');
+    video.muted = true; video.playsInline = true; video.autoplay = true;
+    video.style.cssText = 'position:fixed;width:1px;height:1px;top:0;left:0;opacity:0;pointer-events:none';
+    video.srcObject = mediaStream;
+    document.body.appendChild(video);
+    void video.play().catch(() => {});
 
-    // Initialize Presence State Machine for this camera stream lifecycle
-    presenceGateRef.current = new FacePresenceGate(performance.now(), {
-      warmingUpMs: 1600,
-      missingConfirmMs: 3000,
-      outOfViewConfirmMs: 4000,
-      presentGraceMs: 800
+    // Audio monitor
+    try {
+      const aTr = mediaStream.getAudioTracks();
+      if (aTr.length > 0) {
+        const Ctx = (window as any).AudioContext || (window as any).webkitAudioContext;
+        audioCtx = new Ctx();
+        if (audioCtx!.state === 'suspended') void audioCtx!.resume();
+        const anlz = audioCtx!.createAnalyser(); anlz.fftSize = 2048;
+        audioCtx!.createMediaStreamSource(new MediaStream([aTr[0]])).connect(anlz);
+        const buf = new Uint8Array(anlz.frequencyBinCount);
+        const fbuf = new Uint8Array(anlz.frequencyBinCount);
+        let hStr = 0;
+
+        audioInterval = setInterval(() => {
+          if (dead) return;
+          anlz.getByteFrequencyData(buf);
+          const avg = buf.reduce((s, v) => s + v, 0) / buf.length;
+          if (avg > 80) { if (++hStr >= 4) fire('BACKGROUND_NOISE', 'High ambient audio', 'OBSERVED_EVENT'); }
+          else hStr = 0;
+          anlz.getByteFrequencyData(fbuf);
+          let pk = 0, lp = -40;
+          for (let i = 5; i < fbuf.length - 5; i++) {
+            if (fbuf[i] > 45 && fbuf[i] > fbuf[i-1] && fbuf[i] > fbuf[i+1] && i - lp >= 40) { pk++; lp = i; }
+          }
+          if (pk > 2) { if (++multiVoiceStreak.current >= 3) fire('MULTIPLE_VOICES', 'Multiple voices — coaching?', 'NEEDS_REVIEW'); }
+          else multiVoiceStreak.current = 0;
+        }, 500);
+      }
+    } catch (_) {}
+
+    // ── Electronic Device Detection (Phone / Laptop / Secondary Screen) ──
+    (async () => {
+      try {
+        const cocoSsd = await import('@tensorflow-models/coco-ssd');
+        await import('@tensorflow/tfjs');
+        if (dead) return;
+        const cocoModel = await cocoSsd.load({ base: 'mobilenet_v1' });
+        
+        objectInterval = setInterval(async () => {
+          if (dead || !cocoModel || video.readyState < 2 || !calibDone.current) return;
+          try {
+            const predictions = await cocoModel.detect(video);
+            const suspicious = predictions.filter((p: any) =>
+              ['cell phone', 'laptop', 'tv', 'book', 'tablet'].includes(p.class.toLowerCase()) && p.score > 0.45
+            );
+            if (suspicious.length > 0) {
+              detectedDevicesRef.current = suspicious;
+              showWarn(`🚨 PROHIBITED DEVICE DETECTED (${suspicious[0].class.toUpperCase()})`, 'danger', 3500);
+              fire(
+                'ELECTRONIC_DEVICE_DETECTED',
+                `Electronic device detected in camera frame: ${suspicious[0].class} (${Math.round(suspicious[0].score * 100)}% confidence)`,
+                'NEEDS_REVIEW_HIGH',
+                6000
+              );
+            } else {
+              detectedDevicesRef.current = [];
+            }
+          } catch (_) {}
+        }, 1200);
+      } catch (err) {
+        console.warn('[Proctor] Electronic device detector background notice:', err);
+      }
+    })();
+
+    // Load MediaPipe via script tag (bypasses webpack entirely)
+    const loadScript = () => new Promise<void>((resolve, reject) => {
+      if ((window as any).FaceMesh) { resolve(); return; }
+      const el = document.querySelector<HTMLScriptElement>('script[data-mp-fm]');
+      if (el) { el.addEventListener('load', () => resolve()); el.addEventListener('error', reject); return; }
+      const s = document.createElement('script');
+      s.src = '/mediapipe/face_mesh/face_mesh.js';
+      s.setAttribute('data-mp-fm', '1');
+      s.onload = () => resolve();
+      s.onerror = () => reject(new Error('MediaPipe face_mesh.js failed to load from /mediapipe/face_mesh/'));
+      document.head.appendChild(s);
     });
 
-    const initDetectorAndLoop = async () => {
-      if (detectorRef.current || isInitializingRef.current) return;
-      isInitializingRef.current = true;
-
+    (async () => {
       try {
-        await tf.setBackend('webgl');
-        await tf.ready();
+        await loadScript();
+        if (dead) return;
 
-        if (isCancelled || !isMountedRef.current) return;
+        const FM = (window as any).FaceMesh;
+        const faceMesh = new FM({ locateFile: (f: string) => `/mediapipe/face_mesh/${f}` });
+        faceMesh.setOptions({ maxNumFaces: 3, refineLandmarks: true, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
 
-        // 1. Primary Landmark Detector (MediaPipe FaceMesh 468+10)
-        const detector = await faceLandmarks.createDetector(
-          faceLandmarks.SupportedModels.MediaPipeFaceMesh,
-          {
-            runtime: 'tfjs',
-            refineLandmarks: true,
-            maxFaces: 4
-          }
-        );
+        setStatus('running');
+        let lastSend = 0;
+        let lastTel = 0;
 
-        if (isCancelled || !isMountedRef.current) {
-          detector.dispose?.();
-          return;
-        }
-
-        detectorRef.current = detector;
-        modelInitCountRef.current += 1;
-
-        // 2. Fallback Face Bounding-Box Detector (BlazeFace/MediaPipe Face Detection)
-        try {
-          const fallbackDetector = await faceDetection.createDetector(
-            faceDetection.SupportedModels.MediaPipeFaceDetector,
-            {
-              runtime: 'tfjs',
-              modelType: 'short'
-            }
-          );
-          if (!isCancelled && isMountedRef.current) {
-            fallbackDetectorRef.current = fallbackDetector;
-          } else {
-            fallbackDetector.dispose?.();
-          }
-        } catch (fbErr) {
-          console.warn('Fallback face detector init optional failure:', fbErr);
-        }
-
-        // Attach stream to internal video element
-        const video = videoRef.current;
-        if (video) {
-          video.srcObject = mediaStream;
-          try {
-            await video.play();
-          } catch (_) {}
-        }
-
-        // Setup Ambient Audio Activity Monitor
-        try {
-          const audioTracks = mediaStream.getAudioTracks();
-          if (audioTracks.length > 0) {
-            const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-            audioContext = new AudioCtx();
-            if (audioContext.state === 'suspended') {
-              void audioContext.resume();
-            }
-            const analyser = audioContext.createAnalyser();
-            analyser.fftSize = 512;
-            const source = audioContext.createMediaStreamSource(new MediaStream([audioTracks[0]]));
-            source.connect(analyser);
-            const audioData = new Uint8Array(analyser.frequencyBinCount);
-
-            let highAudioConsecutiveCount = 0;
-            audioCheckInterval = setInterval(() => {
-              if (isCancelled) return;
-              try {
-                analyser.getByteFrequencyData(audioData);
-                let sum = 0;
-                for (let i = 0; i < audioData.length; i++) sum += audioData[i];
-                const avgVolume = sum / audioData.length;
-                if (avgVolume > 85) {
-                  highAudioConsecutiveCount++;
-                  if (highAudioConsecutiveCount >= 5) { // 2.5s sustained loud noise
-                    dispatchViolation('BACKGROUND_NOISE', 'High ambient audio activity detected', 'OBSERVED_EVENT');
-                  }
-                } else {
-                  highAudioConsecutiveCount = 0;
-                }
-              } catch (_) {}
-            }, 500);
-          }
-        } catch (_) {}
-
-        // SECTION 2: HIGH-PERFORMANCE INFERENCE LOOP
-        let lastTelemetryEmit = 0;
-
-        const processFrame = async () => {
-          if (isCancelled || !isMountedRef.current) return;
-
+        faceMesh.onResults((res: any) => {
+          if (dead || !isMounted.current) return;
           const now = performance.now();
+          const lms = res.multiFaceLandmarks as KP[][] | undefined;
+          const nFaces = lms?.length ?? 0;
 
-          // Camera FPS tracking
-          cameraFrameTimesRef.current.push(now);
-          if (cameraFrameTimesRef.current.length > 30) cameraFrameTimesRef.current.shift();
-
-          // Check video decoded frame freshness and track liveness
-          const videoTrack = mediaStream.getVideoTracks()[0];
-          const cameraLive = !!videoTrack && videoTrack.readyState === 'live' && !videoTrack.muted;
-          const currentVideoTime = video?.currentTime || 0;
-          const freshFrame = currentVideoTime !== lastVideoTimeRef.current && (video?.readyState || 0) >= 2;
-          lastVideoTimeRef.current = currentVideoTime;
-
-          // Single-inference lock to drop stale frames
-          if (isInferenceBusyRef.current) {
-            droppedFramesRef.current += 1;
-            scheduleNextFrame();
+          // ── FACE ABSENT ────────────────────────────────────────────────
+          if (nFaces === 0) {
+            emptyStreak.current++;
+            if (absentStart.current === null) absentStart.current = now;
+            const absentMs = now - absentStart.current;
+            if (absentMs > 1500) showWarn('⚠️ Face not visible — please stay in frame', 'warn', 3000);
+            if (absentMs > 2500) fire('FACE_ABSENT', `Out of camera (${(absentMs/1000).toFixed(1)}s)`, 'NEEDS_REVIEW');
+            onTelRef.current?.({ presenceState: 'FACE_NOT_VISIBLE', presenceMessage: 'Face not in frame', confirmedOutOfView: absentMs > 2500, faces: 0, gaze: 'unknown', headPose: 'centered', audio: 'clean', yaw: 0, pitch: 0, roll: 0, gazeX: 0, gazeY: 0 });
             return;
           }
 
-          if (!video || video.readyState < 2 || !detectorRef.current) {
-            // Update presence gate with camera state even when video isn't ready
-            if (presenceGateRef.current) {
-              presenceGateRef.current.update({
-                tMs: now,
-                freshFrame: false,
-                cameraLive,
-                landmarksFace: null,
-                fallbackFace: null,
-                personVisible: null,
-                isCalibrating: isCalibratingRef.current || !autoCalibratedRef.current
-              });
+          if (absentStart.current !== null) { absentStart.current = null; emptyStreak.current = 0; }
+
+          // ── MULTIPLE FACES ─────────────────────────────────────────────
+          if (nFaces > 1) {
+            if (multiFaceAt.current === null) multiFaceAt.current = now;
+            if (now - multiFaceAt.current > 1800) {
+              showWarn(`🚨 ${nFaces} people detected in camera!`, 'danger', 3000);
+              fire('MULTIPLE_PERSONS', `${nFaces} faces detected`, 'NEEDS_REVIEW_HIGH', 6000);
             }
-            scheduleNextFrame();
-            return;
+          } else { multiFaceAt.current = null; }
+
+          const lm = lms![0];
+          const pose = getPose(lm);
+          if (!pose) return;
+
+          // ── CALIBRATION ─────────────────────────────────────────────────
+          if (!calibDone.current) {
+            const samples = manualCalib.current ? manualSamples.current : calibSamples.current;
+            const gaze = getGaze(lm, pose.yaw, pose.pitch);
+            samples.push({ yaw: pose.yaw, pitch: pose.pitch, gazeX: gaze.gazeX, gazeY: gaze.gazeY });
+            const progress = Math.min(samples.length, CALIBRATION_FRAMES);
+            setCalibFrames(progress);
+
+            if (samples.length >= CALIBRATION_FRAMES) {
+              const n = samples.length;
+              const avg = samples.reduce((a, c) => ({ yaw: a.yaw+c.yaw, pitch: a.pitch+c.pitch, gazeX: a.gazeX+c.gazeX, gazeY: a.gazeY+c.gazeY }), { yaw: 0, pitch: 0, gazeX: 0, gazeY: 0 });
+              calibBaseline.current = { yaw: avg.yaw/n, pitch: avg.pitch/n, gazeX: avg.gazeX/n, gazeY: avg.gazeY/n };
+              calibDone.current = true;
+              calibDoneAt.current = performance.now();
+              manualCalib.current = false;
+              calibSamples.current = samples; // preserve for reference
+              setCalibFrames(CALIBRATION_FRAMES);
+            }
+            // Draw calibration UI on canvas
+            const canvas = canvasRef.current;
+            if (canvas && res.image) {
+              canvas.width = res.image.width || 640; canvas.height = res.image.height || 480;
+              const ctx = canvas.getContext('2d');
+              if (ctx) {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                // Pulsing center circle
+                ctx.strokeStyle = '#38bdf8'; ctx.lineWidth = 2;
+                ctx.beginPath(); ctx.arc(canvas.width/2, canvas.height/2, 40, 0, Math.PI*2); ctx.stroke();
+                ctx.fillStyle = 'rgba(56,189,248,0.12)';
+                ctx.fill();
+                // Crosshair
+                ctx.strokeStyle = 'rgba(56,189,248,0.5)'; ctx.lineWidth = 1;
+                ctx.beginPath(); ctx.moveTo(canvas.width/2-60, canvas.height/2); ctx.lineTo(canvas.width/2+60, canvas.height/2); ctx.stroke();
+                ctx.beginPath(); ctx.moveTo(canvas.width/2, canvas.height/2-60); ctx.lineTo(canvas.width/2, canvas.height/2+60); ctx.stroke();
+              }
+            }
+            return; // don't evaluate during calibration
           }
 
-          isInferenceBusyRef.current = true;
-          const inferenceStart = performance.now();
+          // ── EVALUATE — apply calibration baseline ──────────────────────
+          const adjYaw   = pose.yaw   - calibBaseline.current.yaw;
+          const adjPitch = pose.pitch - calibBaseline.current.pitch;
 
-          try {
-            // 1. Primary Landmark Estimation
-            let faces: faceLandmarks.Face[] = [];
-            let landmarksFace: boolean | null = null;
-            let fallbackFace: boolean | null = null;
-            let personVisible: boolean | null = null;
+          const gaze  = getGaze(lm, adjYaw, adjPitch);
+          const adjGazeX = gaze.gazeX - calibBaseline.current.gazeX;
+          const adjGazeY = gaze.gazeY - calibBaseline.current.gazeY;
+          const mouth = getMouth(lm);
 
-            try {
-              faces = await detectorRef.current.estimateFaces(video, {
-                staticImageMode: false,
-                flipHorizontal: false
-              });
-              landmarksFace = faces.length > 0;
-            } catch (landmarkErr) {
-              console.warn('Landmark detection exception:', landmarkErr);
-              landmarksFace = null;
+          // Final direction: head pose primary, eye-only gaze secondary
+          let headDir = classifyDir(adjYaw, adjPitch);
+          let gazeDir = headDir !== 'CENTER' ? headDir : (gaze.dir !== 'UNKNOWN' && gaze.dir !== 'BLINK' ? gaze.dir : 'CENTER');
+          // Recalculate gaze dir with calibrated offsets
+          {
+            const ax = Math.abs(adjGazeX), ay2 = Math.abs(adjGazeY);
+            if (headDir === 'CENTER') {
+              if (ax > GAZE_H && ay2 > GAZE_V) gazeDir = (adjGazeY > 0 ? 'DOWN' : 'UP') + (adjGazeX > 0 ? '_RIGHT' : '_LEFT');
+              else if (ax > GAZE_H) gazeDir = adjGazeX > 0 ? 'RIGHT' : 'LEFT';
+              else if (ay2 > GAZE_V) gazeDir = adjGazeY > 0 ? 'DOWN' : 'UP';
+              else gazeDir = 'CENTER';
             }
+          }
+          const finalDir = gazeDir;
+          const isAway = finalDir !== 'CENTER' && finalDir !== 'BLINK';
 
-            // 2. Corroborating Fallback Detection when Primary Misses
-            if (landmarksFace === false) {
-              if (fallbackDetectorRef.current) {
-                try {
-                  const fbFaces = await fallbackDetectorRef.current.estimateFaces(video, { flipHorizontal: false });
-                  fallbackFace = fbFaces.length > 0;
-                } catch {
-                  fallbackFace = null;
-                }
-              }
-              // Check physical torso presence in video frame
-              personVisible = checkTorsoPersonVisible(video);
-            } else if (landmarksFace === true) {
-              fallbackFace = null;
-              personVisible = true;
-            }
+          // ── Look-away state machine ────────────────────────────────────
+          const reading = readDet.current.update(now, finalDir);
 
-            // 3. Update Camera Observation State Machine
-            const presenceDecision: PresenceDecision = presenceGateRef.current?.update({
-              tMs: now,
-              freshFrame,
-              cameraLive,
-              landmarksFace,
-              fallbackFace,
-              personVisible,
-              isCalibrating: isCalibratingRef.current || !autoCalibratedRef.current
-            }) || {
-              state: 'INITIALIZING',
-              changed: false,
-              message: 'Initializing…',
-              confirmedOutOfView: false,
-              faceMissingMs: 0,
-              positiveStreak: 0
-            };
+          if (isAway) {
+            if (awayStart.current === null) { awayStart.current = now; activeDir.current = finalDir; }
+            const elapsed = now - awayStart.current;
+            const thresh = DIR_MS[finalDir] ?? 800;
 
-            const inferenceEnd = performance.now();
-            const latency = inferenceEnd - inferenceStart;
-
-            // Track performance metrics
-            inferenceTimesRef.current.push(inferenceEnd);
-            if (inferenceTimesRef.current.length > 30) inferenceTimesRef.current.shift();
-            latencySamplesRef.current.push(latency);
-            if (latencySamplesRef.current.length > 30) latencySamplesRef.current.shift();
-            lastAnalyzedTimeRef.current = Date.now();
-
-            let activeObservation: string | null = null;
-            let missReason: string | null = null;
-            let headPoseResult: HeadPoseResult | null = null;
-            let eyeGazeResult: EyeGazeResult | null = null;
-
-            // 4. Handle State Machine Decisions Calmly
-            if (presenceDecision.state === 'CAMERA_CONNECTION_LOST') {
-              activeObservation = 'Camera stream interrupted';
-              missReason = 'Video track muted or frame decoding stalled';
-              triggerVisualNotice('⚠️ Camera connection interrupted', 'CAMERA_LOST', 3000);
-              dispatchViolation('FRAME_COVERAGE_GAP', 'Camera connection temporarily interrupted', 'OBSERVED_EVENT');
-            } else if (presenceDecision.state === 'PERSON_OUT_OF_VIEW_CONFIRMED') {
-              activeObservation = 'Person out of view confirmed';
-              missReason = `Candidate and torso absent for ${(presenceDecision.faceMissingMs / 1000).toFixed(1)}s`;
-              triggerVisualNotice('Please return to camera view', 'OUT_OF_VIEW', 3500);
-              dispatchViolation('FACE_ABSENT', 'Candidate departed camera view (confirmed absence)', 'NEEDS_REVIEW');
-            } else if (presenceDecision.state === 'FACE_NOT_VISIBLE') {
-              activeObservation = 'Face not clearly visible';
-              missReason = `Face missing for ${(presenceDecision.faceMissingMs / 1000).toFixed(1)}s while body is present`;
-              triggerVisualNotice('Please adjust your position so your face is visible', 'FACE_NOT_VISIBLE', 3000);
-              // Body is visibly present; do NOT dispatch FACE_ABSENT misconduct!
-            } else if (presenceDecision.state === 'TRACKING_UNCERTAIN') {
-              activeObservation = 'Checking camera view';
-              missReason = 'Brief tracking loss or detector uncertainty';
-              // Do not alarm the candidate during brief tracking uncertainty
-              if (Date.now() > warningExpiryRef.current) {
-                setWarning('');
-                setWarningType('');
-              }
-            } else if (presenceDecision.state === 'INITIALIZING') {
-              activeObservation = 'Initializing posture baseline…';
-              missReason = 'Warming up detectors';
-            } else if (presenceDecision.state === 'CALIBRATING') {
-              activeObservation = 'Calibrating posture baseline…';
-              missReason = 'Candidate baseline calibration active';
-            } else if (presenceDecision.state === 'FACE_PRESENT') {
-              // Clear absence warnings immediately upon face presence
-              if (warningType === 'OUT_OF_VIEW' || warningType === 'FACE_NOT_VISIBLE' || warningType === 'CAMERA_LOST') {
-                setWarning('');
-                setWarningType('');
-              }
-
-              // Evaluate Multiple Faces with sustained temporal check
-              if (faces.length > 1) {
-                if (multipleFacesStartRef.current === null) multipleFacesStartRef.current = now;
-                const multiDuration = now - multipleFacesStartRef.current;
-                if (multiDuration > 2000) { // Sustained > 2.0s
-                  activeObservation = `Multiple Participants Observed (${faces.length})`;
-                  triggerVisualNotice('Multiple participants observed in camera view', 'MULTIPLE_PERSONS', 3000);
-                  dispatchViolation('MULTIPLE_PERSONS', `Multiple participants observed (${faces.length} faces)`, 'NEEDS_REVIEW');
-                }
+            if (elapsed >= thresh) {
+              const dirLabel = finalDir.toLowerCase().replace('_', '-');
+              if (elapsed >= SEVERE_MS) {
+                showWarn(`⚠️ Prolonged: looking ${dirLabel} (${(elapsed/1000).toFixed(1)}s)`, 'danger', 2000);
+                fire('LOOK_AWAY_SEVERE', `Severe: looked ${finalDir} for ${(elapsed/1000).toFixed(1)}s`, 'NEEDS_REVIEW', 6000);
               } else {
-                multipleFacesStartRef.current = null;
-              }
-
-              // Evaluate Single Face Geometry
-              if (faces.length === 1) {
-                const keypoints = faces[0].keypoints as Keypoint3D[];
-
-                // Initial Baseline Calibration Warmup (First 12 valid frames)
-                if (!autoCalibratedRef.current) {
-                  const rawPose = estimateHeadPose(keypoints, DEFAULT_CALIBRATION);
-                  const rawGaze = estimateEyeGaze(keypoints, rawPose, DEFAULT_CALIBRATION);
-                  autoCalibWarmupRef.current.push({
-                    yaw: rawPose.yaw,
-                    pitch: rawPose.pitch,
-                    roll: rawPose.roll,
-                    gazeX: rawGaze.gazeX,
-                    gazeY: rawGaze.gazeY,
-                  });
-
-                  if (autoCalibWarmupRef.current.length >= 12) {
-                    const s = autoCalibWarmupRef.current;
-                    const n = s.length;
-                    const avg = s.reduce((acc, curr) => ({
-                      yaw: acc.yaw + curr.yaw,
-                      pitch: acc.pitch + curr.pitch,
-                      roll: acc.roll + curr.roll,
-                      gazeX: acc.gazeX + curr.gazeX,
-                      gazeY: acc.gazeY + curr.gazeY
-                    }), { yaw: 0, pitch: 0, roll: 0, gazeX: 0, gazeY: 0 });
-
-                    calibrationRef.current = {
-                      baselineYaw: avg.yaw / n,
-                      baselinePitch: avg.pitch / n,
-                      baselineRoll: avg.roll / n,
-                      baselineGazeX: avg.gazeX / n,
-                      baselineGazeY: avg.gazeY / n
-                    };
-                    autoCalibratedRef.current = true;
-                  }
-                  activeObservation = 'Calibrating posture baseline…';
-                  missReason = 'Auto-calibrating neutral posture';
-                } else if (isCalibratingRef.current) {
-                  // Manual Calibration Sampling
-                  const rawPose = estimateHeadPose(keypoints, DEFAULT_CALIBRATION);
-                  const rawGaze = estimateEyeGaze(keypoints, rawPose, DEFAULT_CALIBRATION);
-                  calibrationSamplesRef.current.push({
-                    yaw: rawPose.yaw,
-                    pitch: rawPose.pitch,
-                    roll: rawPose.roll,
-                    gazeX: rawGaze.gazeX,
-                    gazeY: rawGaze.gazeY
-                  });
-                  if (calibrationSamplesRef.current.length >= 15) {
-                    const s = calibrationSamplesRef.current;
-                    const n = s.length;
-                    const avg = s.reduce((acc, curr) => ({
-                      yaw: acc.yaw + curr.yaw,
-                      pitch: acc.pitch + curr.pitch,
-                      roll: acc.roll + curr.roll,
-                      gazeX: acc.gazeX + curr.gazeX,
-                      gazeY: acc.gazeY + curr.gazeY
-                    }), { yaw: 0, pitch: 0, roll: 0, gazeX: 0, gazeY: 0 });
-
-                    calibrationRef.current = {
-                      baselineYaw: avg.yaw / n,
-                      baselinePitch: avg.pitch / n,
-                      baselineRoll: avg.roll / n,
-                      baselineGazeX: avg.gazeX / n,
-                      baselineGazeY: avg.gazeY / n
-                    };
-                    isCalibratingRef.current = false;
-                    triggerVisualNotice('✓ Posture baseline calibrated', 'CALIBRATING', 2000);
-                  }
-                } else {
-                  // Standard Frame Geometry Evaluation
-                  headPoseResult = estimateHeadPose(keypoints, calibrationRef.current);
-                  eyeGazeResult = estimateEyeGaze(keypoints, headPoseResult, calibrationRef.current);
-
-                  // A. Head Pose Deviations: Requires sustained > 4.5s continuously
-                  if (headPoseResult.direction !== 'CENTER') {
-                    if (headTurnStartRef.current === null) headTurnStartRef.current = now;
-                    const turnDuration = now - headTurnStartRef.current;
-                    activeObservation = `Head turned ${headPoseResult.direction.toLowerCase()} (${Math.abs(headPoseResult.yaw)}°) for ${(turnDuration / 1000).toFixed(1)}s`;
-
-                    if (turnDuration > 4500) {
-                      triggerVisualNotice('Please look towards the interview screen', 'HEAD_TURN', 3000);
-                      dispatchViolation('HEAD_TURN_PROLONGED', `Sustained head turn: ${headPoseResult.yaw}° (${(turnDuration / 1000).toFixed(1)}s)`, 'OBSERVED_EVENT');
-                    }
-                  } else {
-                    headTurnStartRef.current = null;
-                  }
-
-                  // B. Eye Gaze Deviations: Requires sustained > 5.0s continuously (reading/thinking glances are allowed)
-                  if (headPoseResult.direction === 'CENTER' && !eyeGazeResult.isBlinking && eyeGazeResult.direction !== 'CENTER') {
-                    if (gazeDevStartRef.current === null) gazeDevStartRef.current = now;
-                    const gazeDuration = now - gazeDevStartRef.current;
-                    activeObservation = `Eyes looking ${eyeGazeResult.direction.toLowerCase()} for ${(gazeDuration / 1000).toFixed(1)}s`;
-
-                    if (gazeDuration > 5000) {
-                      triggerVisualNotice('Please look towards the interview screen', 'GAZE_DEVIATION', 3000);
-                      dispatchViolation('GAZE_DEVIATION', `Sustained gaze offset (${(gazeDuration / 1000).toFixed(1)}s)`, 'OBSERVED_EVENT');
-                    }
-                  } else {
-                    gazeDevStartRef.current = null;
-                  }
-
-                  // C. Candidate Centered & Attentive
-                  if (headPoseResult.direction === 'CENTER' && (eyeGazeResult.direction === 'CENTER' || eyeGazeResult.isBlinking)) {
-                    missReason = 'Posture centered and within natural reading deadband';
-                    // Clear warning immediately upon returning to center
-                    if (warningType === 'HEAD_TURN' || warningType === 'GAZE_DEVIATION') {
-                      setWarning('');
-                      setWarningType('');
-                      warningExpiryRef.current = 0;
-                    }
-                  }
-                }
-              }
-
-              // Optional Canvas Overlay Rendering
-              if (overlayEnabled && canvasRef.current && video && faces.length > 0) {
-                const canvas = canvasRef.current;
-                canvas.width = video.videoWidth || 640;
-                canvas.height = video.videoHeight || 480;
-                const ctx = canvas.getContext('2d');
-                if (ctx) {
-                  const keypoints = faces[0].keypoints as Keypoint3D[];
-                  ctx.clearRect(0, 0, canvas.width, canvas.height);
-                  ctx.fillStyle = '#38bdf8';
-                  for (let i = 0; i < keypoints.length; i += 10) {
-                    ctx.beginPath();
-                    ctx.arc(keypoints[i].x, keypoints[i].y, 1.5, 0, 2 * Math.PI);
-                    ctx.fill();
-                  }
-                  ctx.fillStyle = '#f43f5e';
-                  if (keypoints[468]) {
-                    ctx.beginPath();
-                    ctx.arc(keypoints[468].x, keypoints[468].y, 3, 0, 2 * Math.PI);
-                    ctx.fill();
-                  }
-                  if (keypoints[473]) {
-                    ctx.beginPath();
-                    ctx.arc(keypoints[473].x, keypoints[473].y, 3, 0, 2 * Math.PI);
-                    ctx.fill();
-                  }
-                }
+                showWarn(`👀 Please look at the screen (${dirLabel})`, 'warn', 2000);
+                if (elapsed >= 3500) fire('LOOK_AWAY_PROLONGED', `Looked ${finalDir} for ${(elapsed/1000).toFixed(1)}s`, 'OBSERVED_EVENT', 5000);
               }
             }
 
-            // SECTION 3: BOUNDED TELEMETRY & DIAGNOSTICS EMIT (5 Hz)
-            if (now - lastTelemetryEmit > 200) {
-              lastTelemetryEmit = now;
-
-              // Camera FPS
-              const cTimes = cameraFrameTimesRef.current;
-              const camFps = cTimes.length > 1
-                ? (cTimes.length - 1) / ((cTimes[cTimes.length - 1] - cTimes[0]) / 1000)
-                : 0;
-
-              // Inference FPS
-              const iTimes = inferenceTimesRef.current;
-              const infFps = iTimes.length > 1
-                ? (iTimes.length - 1) / ((iTimes[iTimes.length - 1] - iTimes[0]) / 1000)
-                : 0;
-
-              // P50 & P95 Latencies
-              const sorted = [...latencySamplesRef.current].sort((a, b) => a - b);
-              const p50 = sorted[Math.floor(sorted.length * 0.5)] || 0;
-              const p95 = sorted[Math.floor(sorted.length * 0.95)] || 0;
-
-              // Emit robust telemetry to parent
-              onTelemetryRef.current?.({
-                presenceState: presenceDecision.state,
-                presenceMessage: presenceDecision.message,
-                confirmedOutOfView: presenceDecision.confirmedOutOfView,
-                faces: faces.length,
-                gaze: eyeGazeResult ? (eyeGazeResult.isBlinking ? 'blink' : eyeGazeResult.direction === 'CENTER' ? 'focused' : 'away') : 'unknown',
-                headPose: headPoseResult ? (headPoseResult.direction === 'CENTER' ? 'centered' : 'turned') : 'centered',
-                audio: 'clean',
-                yaw: headPoseResult?.yaw || 0,
-                pitch: headPoseResult?.pitch || 0,
-                roll: headPoseResult?.roll || 0,
-                gazeX: eyeGazeResult?.gazeX || 0,
-                gazeY: eyeGazeResult?.gazeY || 0
-              });
-
-              // Diagnostics Panel State
-              setDiagMetrics({
-                cameraFps: Math.min(60, camFps),
-                inferenceFps: Math.min(60, infFps),
-                latencyMs: latency,
-                p50LatencyMs: p50,
-                p95LatencyMs: p95,
-                droppedFrames: droppedFramesRef.current,
-                modelInitCount: modelInitCountRef.current,
-                lastAnalyzedAgeMs: Math.max(0, Date.now() - lastAnalyzedTimeRef.current),
-                modelReady: true,
-                activeFaceCount: faces.length,
-                presenceState: presenceDecision.state,
-                presenceMessage: presenceDecision.message,
-                confirmedOutOfView: presenceDecision.confirmedOutOfView,
-                headPose: headPoseResult,
-                eyeGaze: eyeGazeResult,
-                activeObservation,
-                missReason,
-                overlayEnabled,
-                calibrationActive: isCalibratingRef.current || !autoCalibratedRef.current
-              });
+            if (mouth.speaking) {
+              if (speakAwayAt.current === null) speakAwayAt.current = Date.now();
+              if (Date.now() - speakAwayAt.current > 3000) {
+                showWarn('🗣️ Speaking while looking away', 'warn', 2500);
+                fire('SPEAKING_WHILE_AWAY', `Speaking while looking ${finalDir}`, 'NEEDS_REVIEW', 8000);
+              }
             }
-          } catch (err) {
-            console.warn('Frame processing exception:', err);
-          } finally {
-            isInferenceBusyRef.current = false;
-            scheduleNextFrame();
-          }
-        };
 
-        // Frame scheduler using requestVideoFrameCallback when available
-        const scheduleNextFrame = () => {
-          if (isCancelled || !isMountedRef.current) return;
-          if (video && 'requestVideoFrameCallback' in video) {
-            videoCallbackHandle = (video as any).requestVideoFrameCallback(processFrame);
+            if (mouth.open && (finalDir === 'DOWN' || finalDir.startsWith('DOWN'))) {
+              fire('PHONE_CALL_SUSPECTED', 'Mouth open + looking down', 'OBSERVED_EVENT', 12000);
+            }
           } else {
-            animFrameHandle = requestAnimationFrame(processFrame);
+            // Returned to CENTER
+            if (awayStart.current !== null) {
+              const el = now - awayStart.current;
+              if (el > 400) violations.current++;
+              setTimeout(() => { if (!isAway) { setWarn(''); setWarnSev(''); warnExpiry.current = 0; } }, 600);
+            }
+            awayStart.current = null;
+            activeDir.current = 'CENTER';
+            speakAwayAt.current = null;
           }
+
+          if (reading) {
+            showWarn('📖 Reading pattern — scanning notes?', 'warn', 3000);
+            fire('READING_PATTERN', 'Horizontal eye oscillation', 'NEEDS_REVIEW', 8000);
+          }
+
+          // ── Canvas overlay ─────────────────────────────────────────────
+          const canvas = canvasRef.current;
+          if (canvas && res.image) {
+            canvas.width  = res.image.width  || video.videoWidth  || 640;
+            canvas.height = res.image.height || video.videoHeight || 480;
+            const ctx = canvas.getContext('2d');
+            if (ctx) {
+              ctx.clearRect(0, 0, canvas.width, canvas.height);
+              const W = canvas.width, H = canvas.height;
+
+              // Landmark dots
+              ctx.fillStyle = 'rgba(56,189,248,0.7)';
+              for (let i = 0; i < lm.length; i += 6) {
+                ctx.beginPath(); ctx.arc(lm[i].x*W, lm[i].y*H, 1.1, 0, Math.PI*2); ctx.fill();
+              }
+
+              // Iris centers
+              ctx.fillStyle = '#f43f5e';
+              const li = lm[LM.L_IRIS], ri = lm[LM.R_IRIS];
+              if (li) { ctx.beginPath(); ctx.arc(li.x*W, li.y*H, 4, 0, Math.PI*2); ctx.fill(); }
+              if (ri) { ctx.beginPath(); ctx.arc(ri.x*W, ri.y*H, 4, 0, Math.PI*2); ctx.fill(); }
+
+              // Nose direction arrow
+              const nose = lm[LM.NOSE];
+              if (nose) {
+                const nx = nose.x*W, ny = nose.y*H;
+                const col = isAway ? '#f97316' : '#22c55e';
+                ctx.strokeStyle = col; ctx.lineWidth = 2.5;
+                ctx.beginPath(); ctx.moveTo(nx, ny);
+                const ex = nx + Math.sin((adjYaw  * Math.PI)/180) * 40;
+                const ey = ny - Math.sin((adjPitch * Math.PI)/180) * 40;
+                ctx.lineTo(ex, ey); ctx.stroke();
+                ctx.fillStyle = col; ctx.beginPath(); ctx.arc(ex, ey, 4, 0, Math.PI*2); ctx.fill();
+              }
+
+              // Status label
+              const col2 = isAway ? '#f97316' : '#22c55e';
+              ctx.fillStyle = 'rgba(0,0,0,0.65)'; ctx.fillRect(3, 3, 230, 20);
+              ctx.fillStyle = col2; ctx.font = 'bold 12px monospace';
+              ctx.fillText(`${finalDir}  H:${adjYaw.toFixed(0)}° V:${adjPitch.toFixed(0)}°  g:${gaze.dir}`, 7, 18);
+
+              // Draw detected electronic devices bounding boxes
+              if (detectedDevicesRef.current && detectedDevicesRef.current.length > 0) {
+                for (const item of detectedDevicesRef.current) {
+                  const [bx, by, bw, bh] = item.bbox;
+                  const scaleX = W / (video.videoWidth || W || 640);
+                  const scaleY = H / (video.videoHeight || H || 480);
+                  const rx = bx * scaleX, ry = by * scaleY, rw = bw * scaleX, rh = bh * scaleY;
+
+                  ctx.strokeStyle = '#ef4444';
+                  ctx.lineWidth = 3;
+                  ctx.strokeRect(rx, ry, rw, rh);
+
+                  ctx.fillStyle = 'rgba(239, 68, 68, 0.22)';
+                  ctx.fillRect(rx, ry, rw, rh);
+
+                  ctx.fillStyle = '#ef4444';
+                  ctx.font = 'bold 13px monospace';
+                  ctx.fillText(`🚨 ${item.class.toUpperCase()} ${Math.round(item.score * 100)}%`, rx + 4, Math.max(16, ry - 6));
+                }
+              }
+            }
+          }
+
+          // ── Telemetry ──────────────────────────────────────────────────
+          if (now - lastTel > 130) {
+            lastTel = now;
+            onTelRef.current?.({
+              presenceState: 'FACE_PRESENT', presenceMessage: 'Monitoring active',
+              confirmedOutOfView: false, faces: nFaces,
+              gaze: gaze.blink ? 'blink' : (isAway ? 'away' : 'focused'),
+              headPose: headDir !== 'CENTER' ? 'turned' : 'centered',
+              audio: 'clean',
+              yaw: adjYaw, pitch: adjPitch, roll: pose.roll,
+              gazeX: adjGazeX, gazeY: adjGazeY,
+              lookAwayState: isAway ? (awayStart.current && now - awayStart.current > SEVERE_MS ? 'LOOK_AWAY_SEVERE' : 'LOOK_AWAY_CONFIRMED') : 'LOOKING_FORWARD',
+              lookAwayDurationMs: awayStart.current ? now - awayStart.current : 0,
+              lookAwayViolationCount: violations.current,
+              readingPattern: reading, speakingWhileAway: mouth.speaking && isAway,
+              isSpeaking: mouth.speaking, mouthOpen: mouth.open,
+              multipleVoices: multiVoiceStreak.current >= 3,
+            });
+          }
+
+          // Expire warning
+          if (warnExpiry.current > 0 && Date.now() > warnExpiry.current) {
+            setWarn(''); setWarnSev(''); warnExpiry.current = 0;
+          }
+        });
+
+        // Frame sender loop
+        const sendFrame = async () => {
+          if (dead) return;
+          const now = performance.now();
+          if (video.readyState >= 2 && now - lastSend >= 80) {
+            lastSend = now;
+            try { await faceMesh.send({ image: video }); } catch (_) {}
+          }
+          rafHandle = requestAnimationFrame(() => void sendFrame());
         };
 
-        scheduleNextFrame();
+        if (video.readyState >= 2) void sendFrame();
+        else video.addEventListener('loadeddata', () => void sendFrame(), { once: true });
+
       } catch (err) {
-        console.error('AI Proctor init failed:', err);
-      } finally {
-        isInitializingRef.current = false;
+        console.error('[Proctor] Init failed:', err);
+        setStatus('error');
       }
-    };
+    })();
 
-    void initDetectorAndLoop();
-
-    // SECTION 4: ROBUST CLEANUP
     return () => {
-      isCancelled = true;
-      isMountedRef.current = false;
-
-      if (videoCallbackHandle !== null && videoRef.current && 'cancelVideoFrameCallback' in videoRef.current) {
-        (videoRef.current as any).cancelVideoFrameCallback(videoCallbackHandle);
-      }
-      if (animFrameHandle !== null) {
-        cancelAnimationFrame(animFrameHandle);
-      }
-      if (audioCheckInterval) {
-        clearInterval(audioCheckInterval);
-      }
-      if (audioContext) {
-        audioContext.close().catch(() => {});
-      }
-      if (detectorRef.current) {
-        detectorRef.current.dispose?.();
-        detectorRef.current = null;
-      }
-      if (fallbackDetectorRef.current) {
-        fallbackDetectorRef.current.dispose?.();
-        fallbackDetectorRef.current = null;
-      }
+      dead = true; isMounted.current = false;
+      cancelAnimationFrame(rafHandle);
+      if (audioInterval) clearInterval(audioInterval);
+      if (objectInterval) clearInterval(objectInterval);
+      if (audioCtx && audioCtx.state !== 'closed') void audioCtx.close();
+      if (video.parentNode) video.parentNode.removeChild(video);
     };
-  }, [mediaStream?.id]);
+  }, [mediaStream]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ─── Render ───────────────────────────────────────────────────────────────
+
+  const calibPct = Math.round((calibFrames / CALIBRATION_FRAMES) * 100);
+  const isCalibrated = calibFrames >= CALIBRATION_FRAMES;
 
   return (
-    <>
-      {/* Hidden processing video element */}
-      <video
-        ref={videoRef}
-        muted
-        playsInline
-        autoPlay
-        style={{ display: 'none' }}
-      />
+    <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 20 }}>
+      {/* Landmark canvas overlay */}
+      <canvas ref={canvasRef} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }} />
 
-      {/* Optional Debugging Canvas Overlay */}
-      {overlayEnabled && (
-        <canvas
-          ref={canvasRef}
-          style={{
-            position: 'absolute',
-            top: 0,
-            left: 0,
-            width: '100%',
-            height: '100%',
-            pointerEvents: 'none',
-            zIndex: 20
-          }}
-        />
-      )}
-
-      {/* Immediate Visual Notice (Tier A: Polite Observation Aid) */}
-      {warning && (
-        <div
-          style={{
-            position: 'fixed',
-            top: 24,
-            right: 24,
-            padding: '12px 20px',
-            background: warningType === 'OUT_OF_VIEW' ? '#b91c1c' : warningType === 'MULTIPLE_PERSONS' ? '#ea580c' : 'rgba(15, 23, 42, 0.92)',
-            color: '#ffffff',
-            fontSize: 14,
-            fontWeight: 600,
-            borderRadius: 10,
-            zIndex: 99999,
-            maxWidth: 380,
-            boxShadow: '0 8px 24px rgba(0, 0, 0, 0.35)',
-            border: '1px solid rgba(255, 255, 255, 0.2)',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 10,
-            animation: 'fadeIn 0.15s ease-in-out',
-            backdropFilter: 'blur(6px)'
-          }}
-        >
-          <span style={{ fontSize: 18, lineHeight: 1 }}>
-            {warningType === 'OUT_OF_VIEW' ? '👤' : warningType === 'CALIBRATING' ? '🎯' : 'ℹ️'}
-          </span>
-          <div style={{ display: 'flex', flexDirection: 'column' }}>
-            <span style={{ textTransform: 'uppercase', fontSize: 10, letterSpacing: '0.06em', opacity: 0.8 }}>
-              {warningType === 'CALIBRATING' ? 'Calibration' : 'Camera Guidance'}
-            </span>
-            <span style={{ fontSize: 13, fontWeight: 500, marginTop: 1 }}>{warning}</span>
+      {/* Calibration progress UI */}
+      {status === 'running' && !isCalibrated && (
+        <div style={{
+          position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.45)',
+          display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10
+        }}>
+          <div style={{ color: '#38bdf8', fontWeight: 800, fontSize: 14, fontFamily: 'monospace', letterSpacing: 1 }}>
+            🎯 CALIBRATING — LOOK STRAIGHT AT SCREEN
+          </div>
+          <div style={{ width: 180, height: 8, background: 'rgba(255,255,255,0.15)', borderRadius: 4, overflow: 'hidden' }}>
+            <div style={{ width: `${calibPct}%`, height: '100%', background: '#38bdf8', borderRadius: 4, transition: 'width 0.2s' }} />
+          </div>
+          <div style={{ color: '#94a3b8', fontSize: 12, fontFamily: 'monospace' }}>
+            {calibPct}% — do not move ({CALIBRATION_FRAMES - calibFrames} frames left)
           </div>
         </div>
       )}
 
-      {/* Developer Diagnostics HUD */}
-      <ProctorDiagnostics
-        metrics={diagMetrics}
-        onToggleOverlay={(enabled) => setOverlayEnabled(enabled)}
-        onCalibrate={triggerCalibration}
-        onResetCalibration={resetCalibration}
-      />
-    </>
+      {/* Loading */}
+      {status === 'loading' && (
+        <div style={{ position: 'absolute', top: 6, left: 6, background: 'rgba(0,0,0,0.75)', color: '#38bdf8', fontSize: 11, fontWeight: 700, padding: '3px 9px', borderRadius: 6, fontFamily: 'monospace' }}>
+          ⏳ Loading AI proctoring…
+        </div>
+      )}
+
+      {/* Error */}
+      {status === 'error' && (
+        <div style={{ position: 'absolute', top: 6, left: 6, background: 'rgba(239,68,68,0.85)', color: '#fff', fontSize: 11, fontWeight: 700, padding: '3px 9px', borderRadius: 6 }}>
+          ⚠ Proctoring load failed
+        </div>
+      )}
+
+      {/* Re-calibrate button (always visible once running) */}
+      {status === 'running' && isCalibrated && (
+        <div style={{ position: 'absolute', top: 6, right: 6, pointerEvents: 'all' }}>
+          <button
+            onClick={triggerRecalibrate}
+            style={{
+              background: 'rgba(0,0,0,0.65)', border: '1px solid rgba(56,189,248,0.5)',
+              color: '#38bdf8', fontSize: 10, fontWeight: 700, padding: '3px 8px',
+              borderRadius: 5, cursor: 'pointer', fontFamily: 'monospace',
+            }}
+            title="Re-run calibration if you repositioned yourself"
+          >
+            🎯 Recalibrate
+          </button>
+        </div>
+      )}
+
+      {/* Warning banner */}
+      {warn && (
+        <div style={{
+          position: 'absolute', bottom: 6, left: 6, right: 6,
+          background: warnSev === 'danger' ? 'rgba(239,68,68,0.93)' : 'rgba(180,120,0,0.93)',
+          color: '#fff', fontSize: 12, fontWeight: 700,
+          padding: '7px 12px', borderRadius: 7, textAlign: 'center',
+          border: '1px solid rgba(255,255,255,0.2)',
+        }}>
+          {warn}
+        </div>
+      )}
+    </div>
   );
 }

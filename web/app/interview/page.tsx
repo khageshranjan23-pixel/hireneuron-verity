@@ -47,7 +47,9 @@ export default function CandidateInterview() {
   const [secondaryConnected, setSecondaryConnected] = useState(false);
   const [deviceStatus, setDeviceStatus] = useState<{ camera: boolean; mic: boolean }>({ camera: false, mic: false });
   const [showSkipModal, setShowSkipModal] = useState(false);
-  const [showTextFallback, setShowTextFallback] = useState(false);
+  const [showTextFallback, setShowTextFallback] = useState(true);
+  const [micActive, setMicActive] = useState(false);
+  const [answerCleared, setAnswerCleared] = useState(false); // tracks fresh-clear animation
   const [aiState, setAiState] = useState<'idle' | 'speaking' | 'listening' | 'thinking'>('idle');
   const [proctoringAlert, setProctoringAlert] = useState<{ type: string; message: string; severity: string; time: number } | null>(null);
   const [eventCount, setEventCount] = useState(0);
@@ -104,62 +106,111 @@ export default function CandidateInterview() {
     };
   }, [sid, token]);
 
-  // In-browser Web Speech API recognition for instant, zero-latency spoken response feedback
+  // ─── CLEAR ANSWER BOX ON EVERY NEW QUESTION ───────────────────────────────
+  // Runs whenever the question slot ID or phase changes — guarantees the answer
+  // textarea is always fresh and never carries over from a previous question.
+  const prevQuestionKey = useRef<string>('');
+  useEffect(() => {
+    if (!s || s.state !== 'LISTENING') return;
+    const key = `${s.current}-${s.phase}-${s.question?.id}`;
+    if (key !== prevQuestionKey.current) {
+      prevQuestionKey.current = key;
+      setText('');
+      setInterimText('');
+      setAnswerCleared(true);
+      // Brief flash animation then reset flag
+      const t = setTimeout(() => setAnswerCleared(false), 600);
+      return () => clearTimeout(t);
+    }
+  }, [s?.current, s?.phase, s?.question?.id, s?.state]);
+
+  // In-browser Web Speech API recognition — robust continuous capture with auto-restart
+  const stopRequestedRef = useRef(false);
+  const recognitionRef = useRef<any>(null);
+
   useEffect(() => {
     if (!s || s.state !== 'LISTENING' || typeof window === 'undefined') return;
     const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SpeechRec) return;
 
-    let recognition: any = null;
-    let stopRequested = false;
+    stopRequestedRef.current = false;
+    let restartTimer: ReturnType<typeof setTimeout> | null = null;
 
-    try {
-      recognition = new SpeechRec();
-      recognition.continuous = true;
-      recognition.interimResults = true;
-      recognition.lang = 'en-US';
+    const startRecognition = () => {
+      if (stopRequestedRef.current) return;
+      try {
+        if (recognitionRef.current) {
+          try { recognitionRef.current.abort(); } catch (_) {}
+        }
+        const rec = new SpeechRec();
+        rec.continuous = true;
+        rec.interimResults = true;
+        rec.lang = 'en-US';
+        rec.maxAlternatives = 1;
 
-      recognition.onresult = (event: any) => {
-        let currentInterim = '';
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
-          const transcript = event.results[i][0].transcript;
-          if (event.results[i].isFinal) {
-            setText((prev) => (prev ? prev + ' ' + transcript : transcript));
-            setInterimText('');
-          } else {
-            currentInterim += transcript;
+        rec.onstart = () => {
+          setMicActive(true);
+        };
+
+        rec.onresult = (event: any) => {
+          let currentInterim = '';
+          for (let i = event.resultIndex; i < event.results.length; ++i) {
+            const transcript = event.results[i][0].transcript;
+            if (event.results[i].isFinal) {
+              setText((prev) => {
+                const trimmed = transcript.trim();
+                if (!trimmed) return prev;
+                return prev ? prev + ' ' + trimmed : trimmed;
+              });
+              setInterimText('');
+            } else {
+              currentInterim += transcript;
+            }
           }
-        }
-        if (currentInterim) {
-          setInterimText(currentInterim);
-        }
-      };
+          if (currentInterim) {
+            setInterimText(currentInterim);
+          }
+        };
 
-      recognition.onerror = (e: any) => {
-        if (e.error !== 'no-speech') {
-          console.warn('Web Speech notice:', e.error);
-        }
-      };
+        rec.onerror = (e: any) => {
+          // 'no-speech' is normal — just means silence, recognition will end and we'll restart
+          // 'aborted' means we called abort() ourselves — ignore
+          if (e.error === 'aborted') return;
+          console.warn('Web Speech error:', e.error);
+          // For network/audio errors, attempt restart after a short delay
+          if (e.error === 'network' || e.error === 'audio-capture' || e.error === 'service-not-allowed') {
+            setMicActive(false);
+          }
+        };
 
-      recognition.onend = () => {
-        if (!stopRequested && s.state === 'LISTENING') {
-          try {
-            recognition.start();
-          } catch (_) {}
-        }
-      };
+        rec.onend = () => {
+          setMicActive(false);
+          if (stopRequestedRef.current) return;
+          // Auto-restart after a brief pause (helps with browser throttling)
+          restartTimer = setTimeout(() => {
+            if (!stopRequestedRef.current) {
+              startRecognition();
+            }
+          }, 250);
+        };
 
-      recognition.start();
-    } catch (e) {
-      console.warn('SpeechRecognition init:', e);
-    }
+        recognitionRef.current = rec;
+        rec.start();
+      } catch (e) {
+        console.warn('SpeechRecognition init error:', e);
+        setMicActive(false);
+      }
+    };
+
+    startRecognition();
 
     return () => {
-      stopRequested = true;
-      if (recognition) {
-        try {
-          recognition.stop();
-        } catch (_) {}
+      stopRequestedRef.current = true;
+      setMicActive(false);
+      if (restartTimer) clearTimeout(restartTimer);
+      if (recognitionRef.current) {
+        try { recognitionRef.current.abort(); } catch (_) {}
+        recognitionRef.current = null;
       }
     };
   }, [s?.state, s?.current, s?.phase]);
@@ -177,11 +228,29 @@ export default function CandidateInterview() {
             if (latest && Date.now() / 1000 - latest.timestamp < 8) {
               let msg = '⚠️ Proctoring Alert';
               if (latest.type === 'MULTIPLE_PERSONS') {
-                msg = '🚨 CHEATING ALERT: 2 Persons in Camera Frame!';
+                msg = '🚨 CHEATING ALERT: Multiple Persons in Camera Frame!';
               } else if (latest.type === 'FACE_ABSENT') {
                 msg = '⚠️ WARNING: Face Out of Camera View!';
               } else if (latest.type === 'HEAD_TURN_PROLONGED') {
                 msg = '⚠️ SUSPICIOUS: Candidate Looking Away from Screen!';
+              } else if (latest.type === 'GAZE_DEVIATION') {
+                msg = '👀 ALERT: Sustained Eye Gaze Deviation Detected!';
+              } else if (latest.type === 'READING_PATTERN') {
+                msg = '📖 SUSPICIOUS: Reading Pattern Detected — Eyes Scanning Horizontally!';
+              } else if (latest.type === 'SPEAKING_WHILE_AWAY') {
+                msg = '🗣️ ALERT: Speaking While Looking Away — Possible Coaching!';
+              } else if (latest.type === 'FACE_OBSCURED') {
+                msg = '🫣 WARNING: Face Partially Covered or Obscured!';
+              } else if (latest.type === 'MULTIPLE_VOICES') {
+                msg = '🔊 ALERT: Multiple Voices Detected — Possible Assistance!';
+              } else if (latest.type === 'LOOK_AWAY_SEVERE') {
+                msg = '⚠️ SEVERE: Prolonged Look-Away from Screen!';
+              } else if (latest.type === 'RAPID_TOGGLE') {
+                msg = '⚠️ SUSPICIOUS: Repeated Appearing/Disappearing from Camera!';
+              } else if (latest.type === 'PHONE_CALL_SUSPECTED') {
+                msg = '📱 ALERT: Phone Use Suspected — Mouth Open While Looking Down!';
+              } else if (latest.type === 'ELECTRONIC_DEVICE_DETECTED') {
+                msg = '🚨 CHEATING ALERT: Electronic Device Detected (Phone / Laptop / Secondary Screen)!';
               }
               setProctoringAlert({
                 type: latest.type,
@@ -194,7 +263,7 @@ export default function CandidateInterview() {
         }
       } catch (_) {}
     };
-    const timer = setInterval(pollEvents, 2500);
+    const timer = setInterval(pollEvents, 1500);
     return () => clearInterval(timer);
   }, [sid, token, s?.state]);
 
@@ -221,6 +290,42 @@ export default function CandidateInterview() {
     }
   }, [busy, interimText, s?.current, s?.phase, s?.state]);
 
+  const lastSpokenQRef = useRef('');
+
+  const speakText = (textToSpeak: string) => {
+    if (!textToSpeak || typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+    try {
+      window.speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(textToSpeak);
+      u.rate = 0.95;
+      u.pitch = 1.0;
+      const voices = window.speechSynthesis.getVoices();
+      const preferred = voices.find(v => v.lang.startsWith('en') && (v.name.includes('Natural') || v.name.includes('Google') || v.name.includes('Samantha') || v.name.includes('David') || v.name.includes('English')));
+      if (preferred) u.voice = preferred;
+
+      u.onstart = () => setAiState('speaking');
+      u.onend = () => setAiState('idle');
+      u.onerror = () => setAiState('idle');
+
+      window.speechSynthesis.speak(u);
+    } catch (e) {
+      console.warn('Speech synthesis notice:', e);
+    }
+  };
+
+  // Automatically read questions out loud when entering LISTENING or when question changes
+  useEffect(() => {
+    if (!s || s.state !== 'LISTENING') return;
+    const qText = (s.phase === 'followup' ? s.question?.followup : s.question?.text) || '';
+    if (qText && qText !== lastSpokenQRef.current) {
+      lastSpokenQRef.current = qText;
+      const timer = setTimeout(() => {
+        speakText(qText);
+      }, 500);
+      return () => clearTimeout(timer);
+    }
+  }, [s?.state, s?.current, s?.phase, s?.question?.id, s?.question?.text, s?.question?.followup]);
+
   const run = async (f: () => Promise<void>) => {
     setBusy(true);
     setError('');
@@ -241,10 +346,9 @@ export default function CandidateInterview() {
       request_id: crypto.randomUUID()
     });
     setS(r.state);
-    if (r.message && a === 'repeat') {
-      const u = new SpeechSynthesisUtterance(r.message);
-      speechSynthesis.cancel();
-      speechSynthesis.speak(u);
+    if (a === 'repeat') {
+      const qText = r.message || (s.phase === 'followup' ? s.question?.followup : s.question?.text) || '';
+      speakText(qText);
     }
   };
 
@@ -325,10 +429,15 @@ export default function CandidateInterview() {
       await api(`/sessions/${sid}/consent`, token, 'POST', { accepted: true, policy_version: '2026-10-25' });
     } catch (_) {}
     const r = await api(`/sessions/${sid}/pair`, token, 'POST');
-    const baseOrigin =
-      location.hostname === 'localhost' || location.hostname === '127.0.0.1'
-        ? 'https://jobs-nail-championships-exam.trycloudflare.com'
-        : location.origin;
+    let baseOrigin = location.origin;
+    if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
+      try {
+        const tun = await api('/tunnel', '');
+        if (tun?.url) {
+          baseOrigin = tun.url;
+        }
+      } catch (_) {}
+    }
     const u = `${baseOrigin}/phone?nonce=${r.nonce}#${r.nonce}`;
     setPhoneLink(u);
     setQr(await QRCode.toDataURL(u, { width: 220, margin: 2 }));
@@ -611,10 +720,12 @@ export default function CandidateInterview() {
           <div className="interviewLayout">
             <div className="interviewMain">
               {/* Real-time Proctoring Alert Banner (Only for sustained actionable notices) */}
-              {proctoringAlert && (proctoringAlert.type === 'FACE_ABSENT' || proctoringAlert.type === 'MULTIPLE_PERSONS') && (
+              {proctoringAlert && (proctoringAlert.type === 'FACE_ABSENT' || proctoringAlert.type === 'MULTIPLE_PERSONS' || proctoringAlert.type === 'READING_PATTERN' || proctoringAlert.type === 'SPEAKING_WHILE_AWAY' || proctoringAlert.type === 'MULTIPLE_VOICES' || proctoringAlert.type === 'LOOK_AWAY_SEVERE' || proctoringAlert.type === 'RAPID_TOGGLE' || proctoringAlert.type === 'PHONE_CALL_SUSPECTED' || proctoringAlert.type === 'ELECTRONIC_DEVICE_DETECTED') && (
                 <div className={`proctoringWarningBanner ${proctoringAlert.severity.toLowerCase()}`}>
                   {proctoringAlert.type === 'MULTIPLE_PERSONS' ? (
                     <Users size={20} className="alertIconPulse" />
+                  ) : proctoringAlert.type === 'ELECTRONIC_DEVICE_DETECTED' ? (
+                    <Smartphone size={20} className="alertIconPulse" style={{ color: '#ef4444' }} />
                   ) : (
                     <EyeOff size={20} className="alertIconPulse" />
                   )}
@@ -671,6 +782,20 @@ export default function CandidateInterview() {
                   {s.phase === 'followup' ? s.question?.followup : s.question?.text}
                 </h2>
 
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 4, marginBottom: 12 }}>
+                  <button
+                    type="button"
+                    className="btnSecondary compact"
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, padding: '6px 12px' }}
+                    onClick={() => {
+                      const qText = (s.phase === 'followup' ? s.question?.followup : s.question?.text) || '';
+                      speakText(qText);
+                    }}
+                  >
+                    <Volume2 size={16} /> 🔊 Read Question Out Loud
+                  </button>
+                </div>
+
                 {/* Contextual Follow-up Notice */}
                 {s.phase === 'followup' && (
                   <div className="followupNotice">
@@ -678,47 +803,68 @@ export default function CandidateInterview() {
                   </div>
                 )}
 
-                {/* Live Realtime Interim Transcription Banner */}
+                {/* Mic Status + Live Transcription Area */}
+                <div className={`micStatusBar ${micActive ? 'micStatusBarActive' : 'micStatusBarIdle'}`}>
+                  <span className={`micDot ${micActive ? 'micDotActive' : 'micDotIdle'}`}></span>
+                  <span className="micStatusLabel">
+                    {micActive ? '🎤 Listening — speak now...' : '⏸ Mic paused, resuming...'}
+                  </span>
+                  {(text || interimText) && (
+                    <span className="wordCountBadge">
+                      {(text + (interimText ? ' ' + interimText : '')).trim().split(/\s+/).filter(Boolean).length} words
+                    </span>
+                  )}
+                </div>
+
+                {/* Live Interim Transcription Banner */}
                 {interimText && (
                   <div className="liveTranscriptionBanner">
                     <span className="captionDot"></span>
-                    <span className="captionLabel">Live Transcription:</span>
+                    <span className="captionLabel">Hearing:</span>
                     <span className="captionText">"{interimText}"</span>
                   </div>
                 )}
 
-                {/* Spoken Spans History */}
-                <div className="transcriptHistory">
-                  {s.question?.spans?.length > 0 ? (
-                    s.question.spans.map((sp: any) => (
-                      <p key={sp.id} className="transcriptSpan">
-                        <small>{Math.round(sp.offset)}s:</small> {sp.text}
-                      </p>
-                    ))
-                  ) : !interimText ? (
-                    <p className="muted italic">
-                      Start speaking naturally into your microphone. Your spoken words are transcribed in real time.
-                    </p>
-                  ) : null}
-                </div>
-
-                {/* Text Fallback Toggle */}
-                <div className="textFallbackSection">
-                  <button
-                    className="textToggleBtn"
-                    onClick={() => setShowTextFallback(!showTextFallback)}
-                  >
-                    {showTextFallback ? '− Hide text fallback' : '+ Open text fallback / add notes'}
-                  </button>
-                  {showTextFallback && (
-                    <textarea
-                      rows={3}
-                      value={text}
-                      onChange={(e) => setText(e.target.value)}
-                      placeholder="Type your answer here if your microphone is muted or to append technical code..."
-                      className="fallbackInput"
-                    />
-                  )}
+                {/* Always-Visible Answer Text Box */}
+                <div className="answerBoxWrapper">
+                  <div className="answerBoxHeader">
+                    <span className="answerBoxLabel">📝 Your Answer</span>
+                    <span className="answerBoxHint">auto-filled as you speak · you can edit</span>
+                    {(text || interimText) && (
+                      <button
+                        className="clearAnswerBtn"
+                        title="Clear and re-record"
+                        onClick={() => { setText(''); setInterimText(''); }}
+                      >
+                        ✕ Clear
+                      </button>
+                    )}
+                  </div>
+                  <textarea
+                    rows={5}
+                    value={text + (interimText ? (text ? ' ' : '') + interimText : '')}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      // If user edits while interim is showing, commit it as final text
+                      setText(val);
+                      setInterimText('');
+                    }}
+                    placeholder={answerCleared
+                      ? '✨ Ready for your answer — start speaking...'
+                      : 'Your spoken words appear here in real time. Start speaking...'}
+                    className={`answerBoxMain${answerCleared ? ' answerBoxFresh' : ''}`}
+                    spellCheck={false}
+                  />
+                  <div className="answerBoxFooter">
+                    <span className="answerBoxChars">
+                      {(text + (interimText ? ' ' + interimText : '')).trim().length > 0
+                        ? `${(text + (interimText ? ' ' + interimText : '')).trim().split(/\s+/).filter(Boolean).length} words · ${(text + (interimText ? ' ' + interimText : '')).trim().length} chars`
+                        : 'Start speaking or type your answer'}
+                    </span>
+                    {text.trim().length > 20 && (
+                      <span className="answerReadyBadge">✓ Answer ready</span>
+                    )}
+                  </div>
                 </div>
 
                 {/* Skip Question Confirmation Box */}

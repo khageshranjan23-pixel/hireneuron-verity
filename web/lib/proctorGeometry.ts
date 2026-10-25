@@ -1,8 +1,15 @@
 /**
- * HireNeuron Verity — Precision Facial Geometry & Eye Gaze Engine
+ * HireNeuron Verity — Production Facial Geometry & Eye Gaze Engine v2
  *
  * Mathematically rigorous, candidate-relative 3D head pose and iris-based eye gaze estimation.
  * Uses MediaPipe 468+10 landmark topology.
+ *
+ * v2 Enhancements:
+ * - Tighter detection thresholds calibrated against real-world proctoring standards
+ * - Diagonal/compound direction detection (DOWN_LEFT, DOWN_RIGHT, UP_LEFT, UP_RIGHT)
+ * - Lip movement ratio (LMR) for speaking/coaching detection
+ * - Mouth aspect ratio (MAR) for phone-speaking/yawning detection
+ * - Improved blink rejection threshold (EAR < 0.19)
  */
 
 export interface Keypoint3D {
@@ -13,12 +20,36 @@ export interface Keypoint3D {
   name?: string;
 }
 
+export type HeadDirection =
+  | 'CENTER'
+  | 'LEFT'
+  | 'RIGHT'
+  | 'UP'
+  | 'DOWN'
+  | 'DOWN_LEFT'
+  | 'DOWN_RIGHT'
+  | 'UP_LEFT'
+  | 'UP_RIGHT';
+
+export type GazeDirection =
+  | 'CENTER'
+  | 'LEFT'
+  | 'RIGHT'
+  | 'UP'
+  | 'DOWN'
+  | 'DOWN_LEFT'
+  | 'DOWN_RIGHT'
+  | 'UP_LEFT'
+  | 'UP_RIGHT'
+  | 'BLINK'
+  | 'UNKNOWN';
+
 export interface HeadPoseResult {
   yaw: number;        // Degrees: negative = turned left, positive = turned right
   pitch: number;      // Degrees: negative = looking down, positive = looking up
   roll: number;       // Degrees: negative = tilted left, positive = tilted right
   confidence: number; // 0.0 to 1.0
-  direction: 'CENTER' | 'LEFT' | 'RIGHT' | 'UP' | 'DOWN';
+  direction: HeadDirection;
 }
 
 export interface EyeGazeResult {
@@ -27,8 +58,14 @@ export interface EyeGazeResult {
   isBlinking: boolean;
   gazeX: number;      // Head-compensated horizontal gaze offset (-1 to 1)
   gazeY: number;      // Head-compensated vertical gaze offset (-1 to 1)
-  direction: 'CENTER' | 'LEFT' | 'RIGHT' | 'UP' | 'DOWN' | 'BLINK' | 'UNKNOWN';
+  direction: GazeDirection;
   confidence: number;
+  /** Lip openness ratio (0 = closed, 1 = wide open) — detects speaking or being coached */
+  lipMovement: number;
+  /** Whether candidate appears to be speaking (lip ratio > 0.15) */
+  isSpeaking: boolean;
+  /** Whether mouth is wide open (MAR > 0.35) — yawning, phone speaking, surprise */
+  mouthOpen: boolean;
 }
 
 export interface ProctorCalibration {
@@ -71,7 +108,33 @@ export const LANDMARKS = {
   RIGHT_EYE_TOP: 386,
   RIGHT_EYE_BOTTOM: 374,
   RIGHT_IRIS_CENTER: 473,
+
+  // Lip landmarks for speech/coaching detection
+  UPPER_LIP_TOP: 13,
+  LOWER_LIP_BOTTOM: 14,
+  LEFT_INNER_LIP: 78,
+  RIGHT_INNER_LIP: 308,
 };
+
+// ─── Thresholds (v2: tighter for real-world proctoring) ─────────────────────
+
+/** Head pose deadbands in degrees */
+const HEAD_YAW_THRESHOLD = 14;       // was 20° — now catches subtle side glances
+const HEAD_PITCH_THRESHOLD = 12;     // was 18° — now catches looking down at phone
+const HEAD_DIAGONAL_THRESHOLD = 10;  // compound: if both yaw and pitch exceed this
+
+/** Eye gaze deadbands (normalized 0-1 scale) */
+const GAZE_THRESHOLD_H = 0.13;      // was 0.22 — now catches eye-only side glances
+const GAZE_THRESHOLD_V = 0.15;      // was 0.24 — now catches reading phone below screen
+const GAZE_DIAGONAL_THRESHOLD = 0.10; // compound: if both X and Y exceed this
+
+/** Blink detection threshold */
+const BLINK_EAR_THRESHOLD = 0.19;   // was 0.16 — better accuracy, fewer missed blinks
+
+/** Lip/mouth thresholds */
+const LIP_SPEAKING_THRESHOLD = 0.15; // lip openness ratio above this = speaking
+const MOUTH_OPEN_MAR_THRESHOLD = 0.35; // mouth aspect ratio above this = mouth wide open
+
 
 /**
  * Computes candidate-relative 3D Head Pose (Yaw, Pitch, Roll in degrees).
@@ -150,12 +213,23 @@ export function estimateHeadPose(
   // Confidence based on landmark presence and scale
   const confidence = Math.min(1.0, Math.max(0.2, (faceHeight / 120.0)));
 
-  // Direction classification with realistic deadbands (prevents false positives during normal reading)
-  let direction: 'CENTER' | 'LEFT' | 'RIGHT' | 'UP' | 'DOWN' = 'CENTER';
-  if (yaw < -20) direction = 'LEFT';
-  else if (yaw > 20) direction = 'RIGHT';
-  else if (pitch < -18) direction = 'DOWN';
-  else if (pitch > 18) direction = 'UP';
+  // Direction classification with tighter deadbands (v2)
+  let direction: HeadDirection = 'CENTER';
+  const absYaw = Math.abs(yaw);
+  const absPitch = Math.abs(pitch);
+
+  // Check compound diagonal directions first (both axes deviate)
+  if (absYaw > HEAD_DIAGONAL_THRESHOLD && absPitch > HEAD_DIAGONAL_THRESHOLD) {
+    if (pitch < 0 && yaw < 0) direction = 'DOWN_LEFT';
+    else if (pitch < 0 && yaw > 0) direction = 'DOWN_RIGHT';
+    else if (pitch > 0 && yaw < 0) direction = 'UP_LEFT';
+    else if (pitch > 0 && yaw > 0) direction = 'UP_RIGHT';
+  }
+  // Then check single-axis directions with tighter thresholds
+  else if (yaw < -HEAD_YAW_THRESHOLD) direction = 'LEFT';
+  else if (yaw > HEAD_YAW_THRESHOLD) direction = 'RIGHT';
+  else if (pitch < -HEAD_PITCH_THRESHOLD) direction = 'DOWN';
+  else if (pitch > HEAD_PITCH_THRESHOLD) direction = 'UP';
 
   return {
     yaw: Math.round(yaw * 10) / 10,
@@ -171,22 +245,29 @@ export function estimateHeadPose(
  *
  * Compensates for head rotation to isolate true eyeball motion from head turns.
  * Includes Eye Aspect Ratio (EAR) blink rejection.
+ *
+ * v2: Adds lip movement ratio and mouth open detection for coaching/phone detection.
  */
 export function estimateEyeGaze(
   keypoints: Keypoint3D[],
   headPose: HeadPoseResult,
   calibration: ProctorCalibration = DEFAULT_CALIBRATION
 ): EyeGazeResult {
+  const emptyResult: EyeGazeResult = {
+    leftEAR: 0,
+    rightEAR: 0,
+    isBlinking: false,
+    gazeX: 0,
+    gazeY: 0,
+    direction: 'UNKNOWN',
+    confidence: 0,
+    lipMovement: 0,
+    isSpeaking: false,
+    mouthOpen: false
+  };
+
   if (!keypoints || keypoints.length < 478) {
-    return {
-      leftEAR: 0,
-      rightEAR: 0,
-      isBlinking: false,
-      gazeX: 0,
-      gazeY: 0,
-      direction: 'UNKNOWN',
-      confidence: 0
-    };
+    return emptyResult;
   }
 
   // Left Eye Landmarks
@@ -205,15 +286,7 @@ export function estimateEyeGaze(
 
   if (!lOuter || !lInner || !lTop || !lBottom || !lIris ||
       !rInner || !rOuter || !rTop || !rBottom || !rIris) {
-    return {
-      leftEAR: 0,
-      rightEAR: 0,
-      isBlinking: false,
-      gazeX: 0,
-      gazeY: 0,
-      direction: 'UNKNOWN',
-      confidence: 0
-    };
+    return emptyResult;
   }
 
   // 1. Eye Aspect Ratio (EAR)
@@ -225,8 +298,38 @@ export function estimateEyeGaze(
   const rHeight = Math.hypot(rBottom.x - rTop.x, rBottom.y - rTop.y) || 1;
   const rightEAR = rHeight / rWidth;
 
-  // Blink check: if eyes are closed (EAR < 0.16), reject as blink rather than gaze deviation
-  if (leftEAR < 0.16 && rightEAR < 0.16) {
+  // ─── Lip Movement & Mouth Analysis ───────────────────────────────────
+  let lipMovement = 0;
+  let isSpeaking = false;
+  let mouthOpen = false;
+
+  const upperLip = keypoints[LANDMARKS.UPPER_LIP_TOP];
+  const lowerLip = keypoints[LANDMARKS.LOWER_LIP_BOTTOM];
+  const leftMouth = keypoints[LANDMARKS.LEFT_MOUTH_CORNER];
+  const rightMouth = keypoints[LANDMARKS.RIGHT_MOUTH_CORNER];
+  const leftInnerLip = keypoints[LANDMARKS.LEFT_INNER_LIP];
+  const rightInnerLip = keypoints[LANDMARKS.RIGHT_INNER_LIP];
+
+  if (upperLip && lowerLip && leftMouth && rightMouth) {
+    // Lip Movement Ratio (LMR): vertical lip opening / mouth width
+    const lipVertical = Math.hypot(lowerLip.x - upperLip.x, lowerLip.y - upperLip.y);
+    const mouthWidth = Math.hypot(rightMouth.x - leftMouth.x, rightMouth.y - leftMouth.y) || 1;
+    lipMovement = Math.min(1.0, lipVertical / mouthWidth);
+    isSpeaking = lipMovement > LIP_SPEAKING_THRESHOLD;
+
+    // Mouth Aspect Ratio (MAR) using inner lip landmarks for more precise wide-open detection
+    if (leftInnerLip && rightInnerLip) {
+      const innerWidth = Math.hypot(rightInnerLip.x - leftInnerLip.x, rightInnerLip.y - leftInnerLip.y) || 1;
+      const innerHeight = lipVertical;
+      const mar = innerHeight / innerWidth;
+      mouthOpen = mar > MOUTH_OPEN_MAR_THRESHOLD;
+    } else {
+      mouthOpen = lipMovement > MOUTH_OPEN_MAR_THRESHOLD;
+    }
+  }
+
+  // Blink check: if eyes are closed (EAR < 0.19), reject as blink rather than gaze deviation
+  if (leftEAR < BLINK_EAR_THRESHOLD && rightEAR < BLINK_EAR_THRESHOLD) {
     return {
       leftEAR: Math.round(leftEAR * 100) / 100,
       rightEAR: Math.round(rightEAR * 100) / 100,
@@ -234,7 +337,10 @@ export function estimateEyeGaze(
       gazeX: 0,
       gazeY: 0,
       direction: 'BLINK',
-      confidence: 0.95
+      confidence: 0.95,
+      lipMovement: Math.round(lipMovement * 100) / 100,
+      isSpeaking,
+      mouthOpen
     };
   }
 
@@ -272,12 +378,20 @@ export function estimateEyeGaze(
   // Gaze confidence based on EAR and landmark validity
   const confidence = Math.min(1.0, Math.max(0.2, (leftEAR + rightEAR) * 1.8));
 
-  // 4. Direction Classification (realistic deadbands to avoid triggering while reading on-screen)
-  let direction: 'CENTER' | 'LEFT' | 'RIGHT' | 'UP' | 'DOWN' | 'BLINK' | 'UNKNOWN' = 'CENTER';
-  const GAZE_THRESHOLD_H = 0.22;
-  const GAZE_THRESHOLD_V = 0.24;
+  // 4. Direction Classification (v2: tighter deadbands + diagonal detection)
+  let direction: GazeDirection = 'CENTER';
+  const absGazeX = Math.abs(compensatedGazeX);
+  const absGazeY = Math.abs(compensatedGazeY);
 
-  if (compensatedGazeX < -GAZE_THRESHOLD_H) {
+  // Check compound diagonal directions first
+  if (absGazeX > GAZE_DIAGONAL_THRESHOLD && absGazeY > GAZE_DIAGONAL_THRESHOLD) {
+    if (compensatedGazeY > 0 && compensatedGazeX < 0) direction = 'DOWN_LEFT';
+    else if (compensatedGazeY > 0 && compensatedGazeX > 0) direction = 'DOWN_RIGHT';
+    else if (compensatedGazeY < 0 && compensatedGazeX < 0) direction = 'UP_LEFT';
+    else if (compensatedGazeY < 0 && compensatedGazeX > 0) direction = 'UP_RIGHT';
+  }
+  // Then check single-axis with tighter thresholds
+  else if (compensatedGazeX < -GAZE_THRESHOLD_H) {
     direction = 'LEFT';
   } else if (compensatedGazeX > GAZE_THRESHOLD_H) {
     direction = 'RIGHT';
@@ -294,6 +408,9 @@ export function estimateEyeGaze(
     gazeX: Math.round(compensatedGazeX * 1000) / 1000,
     gazeY: Math.round(compensatedGazeY * 1000) / 1000,
     direction,
-    confidence: Math.round(confidence * 100) / 100
+    confidence: Math.round(confidence * 100) / 100,
+    lipMovement: Math.round(lipMovement * 100) / 100,
+    isSpeaking,
+    mouthOpen
   };
 }

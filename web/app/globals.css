@@ -161,3 +161,32 @@
 .pulsingAlertDot { width: 8px; height: 8px; border-radius: 50%; background: #ef4444; display: inline-block; animation: pulseRec 1s infinite; margin-right: 8px; }
 .bannerContent { display: flex; align-items: center; }
 .bannerSubtitle { display: block; font-size: 10px; opacity: 0.85; margin-top: 3px; }
+
+.answerBoxMain { border: 2px solid #6366f1 !important; border-radius: 10px !important; font-size: 14px !important; line-height: 1.6 !important; padding: 12px 14px !important; background: #fafbff !important; color: #0f172a !important; resize: vertical; }
+.answerBoxMain:focus { outline: none; border-color: #4f46e5 !important; box-shadow: 0 0 0 3px rgba(99,102,241,0.15) !important; }
+.answerBoxLabel { display: block; font-size: 12px; font-weight: 700; color: #334155; margin-bottom: 6px; }
+.answerBoxHint { font-weight: 400; color: #64748b; font-size: 11px; }
+.micStatusBar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; margin-bottom: 12px; font-size: 12px; font-weight: 600; color: #166534; }
+.micDot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+.micDotActive { background: #22c55e; box-shadow: 0 0 0 3px rgba(34,197,94,0.3); animation: micPulse 1s infinite; }
+.micDotIdle { background: #94a3b8; }
+.micStatusLabel { font-size: 12px; }
+@keyframes micPulse { 0%, 100% { box-shadow: 0 0 0 3px rgba(34,197,94,0.3); } 50% { box-shadow: 0 0 0 6px rgba(34,197,94,0.1); } }
+/* -- High-end Answer Box -- */
+.answerBoxWrapper { margin-bottom: 24px; }
+.answerBoxHeader { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+.answerBoxLabel { font-size: 13px; font-weight: 700; color: #1e1b4b; }
+.answerBoxHint { font-size: 11px; color: #64748b; font-weight: 400; flex: 1; }
+.clearAnswerBtn { margin-left: auto; background: none; border: 1px solid #fca5a5; color: #dc2626; font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 6px; cursor: pointer; transition: all 0.15s; }
+.clearAnswerBtn:hover { background: #fee2e2; }
+.answerBoxMain { width: 100%; border: 2px solid #6366f1; border-radius: 10px; font-size: 14px; line-height: 1.65; padding: 14px 16px; background: #fafbff; color: #0f172a; resize: vertical; transition: border-color 0.2s, box-shadow 0.2s; outline: none; }
+.answerBoxMain:focus { border-color: #4f46e5; box-shadow: 0 0 0 3px rgba(99,102,241,0.18); }
+.answerBoxMain::placeholder { color: #94a3b8; font-style: italic; }
+@keyframes freshPop { 0% { border-color: #22c55e; box-shadow: 0 0 0 4px rgba(34,197,94,0.25); background: #f0fdf4; } 100% { border-color: #6366f1; box-shadow: none; background: #fafbff; } }
+.answerBoxFresh { animation: freshPop 0.6s ease forwards; }
+.answerBoxFooter { display: flex; align-items: center; justify-content: space-between; margin-top: 6px; padding: 0 2px; }
+.answerBoxChars { font-size: 11px; color: #94a3b8; }
+.answerReadyBadge { font-size: 11px; font-weight: 700; color: #16a34a; background: #f0fdf4; border: 1px solid #86efac; padding: 2px 8px; border-radius: 20px; }
+.wordCountBadge { margin-left: auto; font-size: 11px; font-weight: 700; color: #4f46e5; background: #eef2ff; border: 1px solid #c7d2fe; padding: 2px 8px; border-radius: 20px; }
+.micStatusBarActive { background: #f0fdf4 !important; border-color: #86efac !important; color: #15803d !important; }
+.micStatusBarIdle { background: #f8fafc !important; border-color: #e2e8f0 !important; color: #64748b !important; }

@@ -18,6 +18,8 @@ export interface DiagnosticsMetrics {
   presenceState?: string;
   presenceMessage?: string;
   confirmedOutOfView?: boolean;
+  lookAwayState?: string;
+  lookAwayDurationMs?: number;
   headPose: HeadPoseResult | null;
   eyeGaze: EyeGazeResult | null;
   activeObservation: string | null;
@@ -152,6 +154,19 @@ export default function ProctorDiagnostics({
                 {metrics.presenceMessage}
               </div>
             )}
+            {metrics.lookAwayState && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 6, paddingTop: 4, borderTop: '1px dashed #334155' }}>
+                <span style={{ fontSize: 10, color: '#94a3b8' }}>Gaze Gate (1.0s):</span>
+                <span style={{
+                  fontSize: 10,
+                  fontWeight: 600,
+                  color: metrics.lookAwayState === 'LOOKING_FORWARD' ? '#4ade80' :
+                         metrics.lookAwayState === 'LOOK_AWAY_CONFIRMED' ? '#f59e0b' : '#38bdf8'
+                }}>
+                  {metrics.lookAwayState} ({metrics.lookAwayDurationMs || 0}ms)
+                </span>
+              </div>
+            )}
           </div>
 
           {/* Section 1: Performance & Latency */}
@@ -263,11 +278,27 @@ export default function ProctorDiagnostics({
                   {metrics.eyeGaze?.isBlinking ? ' (Blinking)' : ''}
                 </span>
               </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
                 <span>Gaze Direction:</span>
                 <strong style={{ color: metrics.eyeGaze?.direction === 'CENTER' ? '#4ade80' : '#f87171' }}>
                   {metrics.eyeGaze?.direction || 'UNKNOWN'}
                 </strong>
+              </div>
+              {/* v2: Lip & Mouth Tracking */}
+              <div style={{ borderTop: '1px dashed #334155', paddingTop: 4, marginTop: 4 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
+                  <span>Lip Movement:</span>
+                  <span style={{ color: metrics.eyeGaze?.isSpeaking ? '#f87171' : '#4ade80' }}>
+                    {metrics.eyeGaze ? `${(metrics.eyeGaze.lipMovement * 100).toFixed(0)}%` : 'N/A'}
+                    {metrics.eyeGaze?.isSpeaking ? ' 🗣️ SPEAKING' : ''}
+                  </span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span>Mouth Open:</span>
+                  <span style={{ color: metrics.eyeGaze?.mouthOpen ? '#f87171' : '#4ade80' }}>
+                    {metrics.eyeGaze?.mouthOpen ? '⚠️ WIDE OPEN' : 'Normal'}
+                  </span>
+                </div>
               </div>
             </div>
           </div>

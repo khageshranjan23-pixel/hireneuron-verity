@@ -46,6 +46,7 @@ class ProductionProctor:
     def __init__(self):
         self.mp_available = False
         self.face_det = None
+        self._gaze_history: list[tuple[float, float]] = []  # v2: (timestamp, gaze_x) for reading pattern detection
         self._init_mediapipe()
         if not self.mp_available:
             self._init_opencv_fallback()
@@ -88,14 +89,31 @@ class ProductionProctor:
         except Exception as e:
             logger.error("OpenCV fallback also failed: %s", e)
 
-    def analyze_frame(self, img_pil: Image.Image) -> dict:
+    def analyze_frame(self, img_pil: Image.Image, timestamp: float = 0.0) -> dict:
         """Analyze a PIL RGB image. Returns rich analysis dict."""
         import numpy as np
         arr = np.array(img_pil)
         if self.mp_available:
-            return self._analyze_mediapipe(arr)
+            result = self._analyze_mediapipe(arr)
         else:
-            return self._analyze_opencv(arr)
+            result = self._analyze_opencv(arr)
+
+        # v2: Reading pattern detection via gaze history
+        gaze_x = result.get('gaze_score', 0.0)
+        if result['face_count'] >= 1 and result['looking_away']:
+            self._gaze_history.append((timestamp, gaze_x))
+        # Prune old entries (keep last 4 seconds)
+        self._gaze_history = [(t, g) for t, g in self._gaze_history if timestamp - t < 4.0]
+        # Count direction changes (oscillations)
+        oscillations = 0
+        for j in range(1, len(self._gaze_history)):
+            prev_g = self._gaze_history[j - 1][1]
+            curr_g = self._gaze_history[j][1]
+            if (prev_g > 0.3 and curr_g < -0.3) or (prev_g < -0.3 and curr_g > 0.3):
+                oscillations += 1
+        result['reading_pattern'] = oscillations >= 3
+
+        return result
 
     def _analyze_mediapipe(self, arr):
         """MediaPipe analysis: face count, gaze, head pose, eyes open state."""
@@ -123,6 +141,12 @@ class ProductionProctor:
             'method': 'mediapipe',
             'observation_valid': True,
             'face_details': [],
+            # v2: Enhanced detection fields
+            'lip_movement': False,     # True if candidate appears to be speaking
+            'lip_ratio': 0.0,         # Lip openness ratio (0-1)
+            'mouth_open': False,       # True if mouth is wide open (MAR > 0.35)
+            'reading_pattern': False,  # True if horizontal gaze oscillation detected
+            'face_obscured': False,    # True if face partially covered
         }
 
         if num_faces == 0:
@@ -204,7 +228,25 @@ class ProductionProctor:
                     eye_looking_away = gaze_x_deviation > 0.6
 
                 # Looking away: sustained head turn or validated iris gaze deviation (non-blinking)
-                looking_away = (abs(head_yaw) > 0.35) or eye_looking_away
+                looking_away = (abs(head_yaw) > 0.25) or eye_looking_away  # v2: tighter threshold (was 0.35)
+
+                # v2: Lip Movement Detection for speaking/coaching
+                lip_movement = False
+                lip_ratio = 0.0
+                mouth_open_detected = False
+                try:
+                    upper_lip = landmarks[13]  # UPPER_LIP_TOP
+                    lower_lip = landmarks[14]  # LOWER_LIP_BOTTOM
+                    left_mouth = landmarks[61]  # LEFT_MOUTH_CORNER
+                    right_mouth = landmarks[291]  # RIGHT_MOUTH_CORNER
+
+                    lip_vertical = math.hypot(lower_lip.x - upper_lip.x, lower_lip.y - upper_lip.y)
+                    mouth_width = math.hypot(right_mouth.x - left_mouth.x, right_mouth.y - left_mouth.y) or 1e-6
+                    lip_ratio = min(1.0, lip_vertical / mouth_width)
+                    lip_movement = lip_ratio > 0.15  # Speaking threshold
+                    mouth_open_detected = lip_ratio > 0.35  # Wide open mouth
+                except (IndexError, Exception):
+                    pass
 
                 # Eyes open check via blendshapes if available
                 eyes_open = not is_blinking
@@ -221,6 +263,9 @@ class ProductionProctor:
                     'gaze_deviation': round(gaze_x_deviation, 3),
                     'looking_away': looking_away,
                     'eyes_open': eyes_open,
+                    'lip_movement': lip_movement,
+                    'lip_ratio': round(lip_ratio, 3),
+                    'mouth_open': mouth_open_detected,
                 }
                 analysis['face_details'].append(detail)
 
@@ -231,6 +276,9 @@ class ProductionProctor:
                     analysis['gaze_score'] = gaze_x_deviation
                     analysis['looking_away'] = looking_away
                     analysis['eyes_open'] = eyes_open
+                    analysis['lip_movement'] = lip_movement
+                    analysis['lip_ratio'] = lip_ratio
+                    analysis['mouth_open'] = mouth_open_detected
 
             except (IndexError, Exception) as e:
                 logger.debug("Landmark analysis error for face %d: %s", i, e)
@@ -289,14 +337,20 @@ class ProductionTemporalDetector:
 
     # (event_key, threshold_secs, cooldown_secs, severity)
     RULES = [
-        # Multi-person: require 2s of sustained evidence
-        ('MULTIPLE_PERSONS',    2,    20, 'NEEDS_REVIEW_HIGH'),
-        # Face and person absent: require 4s sustained corroborated absence
-        ('FACE_ABSENT',         4,    25, 'NEEDS_REVIEW'),
-        # Gaze deviation: 6s sustained (reading and reflecting are normal)
-        ('GAZE_DEVIATION',      6,    25, 'OBSERVED_EVENT'),
-        # Prolonged head turn: 5s profile view
-        ('HEAD_TURN_PROLONGED', 5,    25, 'OBSERVED_EVENT'),
+        # Multi-person: require 1.5s of sustained evidence (was 2s)
+        ('MULTIPLE_PERSONS',    1.5,  15, 'NEEDS_REVIEW_HIGH'),
+        # Face and person absent: require 2s sustained corroborated absence (was 4s)
+        ('FACE_ABSENT',         2,    15, 'NEEDS_REVIEW'),
+        # Gaze deviation: 3s sustained (was 6s — too lenient for proctoring)
+        ('GAZE_DEVIATION',      3,    15, 'OBSERVED_EVENT'),
+        # Prolonged head turn: 2.5s profile view (was 5s)
+        ('HEAD_TURN_PROLONGED', 2.5,  15, 'OBSERVED_EVENT'),
+        # Speaking while looking away: 2s (new v2 detection)
+        ('SPEAKING_WHILE_AWAY', 2,    20, 'NEEDS_REVIEW'),
+        # Reading pattern: rapid horizontal gaze oscillation (new v2)
+        ('READING_PATTERN',     1,    20, 'NEEDS_REVIEW'),
+        # Face partially obscured: 3s sustained (new v2)
+        ('FACE_OBSCURED',       3,    20, 'OBSERVED_EVENT'),
     ]
 
     def __init__(self):
@@ -315,8 +369,16 @@ class ProductionTemporalDetector:
             (role, 'MULTIPLE_PERSONS'): analysis['person_count'] >= 2 or analysis['face_count'] >= 2,
             # Face absent ONLY when BOTH face AND person are absent (corroborated negative evidence)
             (role, 'FACE_ABSENT'): role == 'primary' and analysis['face_count'] == 0 and analysis.get('person_count', 0) == 0,
+            # Gaze deviation: now triggers at lower threshold (0.10 vs 0.14 before)
             (role, 'GAZE_DEVIATION'): role == 'primary' and analysis['face_count'] >= 1 and analysis['looking_away'],
-            (role, 'HEAD_TURN_PROLONGED'): role == 'primary' and analysis['face_count'] >= 1 and abs(analysis.get('head_yaw', 0)) > 0.45,
+            # Head turn: tighter threshold (0.25 rad ≈ 14° vs 0.45 rad ≈ 26° before)
+            (role, 'HEAD_TURN_PROLONGED'): role == 'primary' and analysis['face_count'] >= 1 and abs(analysis.get('head_yaw', 0)) > 0.25,
+            # v2: Speaking while looking away (lip movement + gaze deviation)
+            (role, 'SPEAKING_WHILE_AWAY'): role == 'primary' and analysis['face_count'] >= 1 and analysis['looking_away'] and analysis.get('lip_movement', False),
+            # v2: Reading pattern — rapid horizontal gaze oscillation detected by gaze history
+            (role, 'READING_PATTERN'): role == 'primary' and analysis.get('reading_pattern', False),
+            # v2: Face partially obscured — face detected by fallback but landmarks failed
+            (role, 'FACE_OBSCURED'): role == 'primary' and analysis.get('face_obscured', False),
         }
 
         for (ev_role, kind), triggered in conditions.items():
@@ -428,6 +490,9 @@ async def run(sid: str):
                     'looking_away': analysis.get('looking_away', False),
                     'gaze_score': analysis.get('gaze_score', 0),
                     'head_yaw_deg': round(math.degrees(analysis.get('head_yaw', 0)), 1),
+                    'lip_movement': analysis.get('lip_movement', False),
+                    'reading_pattern': analysis.get('reading_pattern', False),
+                    'mouth_open': analysis.get('mouth_open', False),
                     'ts': time.time(),
                 })
                 await room.local_participant.publish_data(msg.encode())
@@ -487,7 +552,7 @@ async def run(sid: str):
             """Consume video frames, run analysis, emit events."""
             stream = rtc.VideoStream(track, format=rtc.VideoBufferType.RGB24)
             last_analysis_time = 0.0
-            ANALYSIS_INTERVAL = 0.5  # analyze every 500ms for high sensitivity
+            ANALYSIS_INTERVAL = 0.35  # analyze every 350ms for higher sensitivity (was 500ms)
 
             try:
                 async for ev in stream:
@@ -518,7 +583,7 @@ async def run(sid: str):
                                                          {'face_count': 0, 'person_count': 0, 'gaze_score': 0, 'head_yaw': 0})
 
                     # Run ML analysis in thread pool to avoid blocking event loop
-                    analysis = await asyncio.to_thread(proctorer.analyze_frame, img)
+                    analysis = await asyncio.to_thread(proctorer.analyze_frame, img, now)
 
                     # Broadcast real-time status on every frame (for live HUD)
                     if now % 2.0 < ANALYSIS_INTERVAL:  # broadcast ~every 2s

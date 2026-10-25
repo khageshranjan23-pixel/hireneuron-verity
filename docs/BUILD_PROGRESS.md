@@ -1,56 +1,75 @@
-# HireNeuron Verity — Build Progress & Resumption Ledger
+# RTPL HireNeuron Verity — Complete Platform Build Progress
 
-**Last Updated:** 2026-10-25 07:10 UTC
-**Current Checkpoint:** Complete End-to-End Build Verified, Sealed, and Packaged
-
----
-
-## 1. Executive Status
-- Baseline Git initialized: `76adb59`
-- Python environment created and all backend dependencies installed in `.venv` (Python 3.15.1).
-- Frontend dependencies installed cleanly (`npm ci`) and verified with production build (`next build` succeeded with zero errors or warnings).
-- Test suite: **29/29 tests passing** (`test_api.py`, `test_core.py`, `test_live_workflow.py`).
-- Full live workflow test (`backend/tests/test_live_workflow.py`) passed 10/10 end-to-end integration milestones against live providers with zero errors.
-- Real end-to-end integration verified: session creation, candidate JD/resume analysis & skill alignment, question generation with fallback, live voice STT/TTS pipeline with real-time interim data channel captions and barge-in, proctoring events with cryptographic HMAC seals, interview completion, session recording upload & seek playback with full provenance tracking, transcript rubric evaluation with exact quote verification, and reviewer overrides with immutable audit log.
+> Last updated: 2026-10-25  
+> Build session: Antigravity conversation 46c20583-82b3-451b-804d-30e1bd98b981
 
 ---
 
-## 2. Priority Backlog & Progress Tracker
+## CODEBASE AUDIT SUMMARY
 
-| Stage | Description | Status | Verification & Deliverables |
-|---|---|---|---|
-| **Phase 0** | Baseline setup, venv, deps, Next.js build, unit tests | **DONE** | 29/29 backend tests passed, Next.js build OK |
-| **Phase 1** | Recruiter Workspace: JD/Resume analysis, structured profile extraction, candidate-job alignment matrix, freeze blueprint, question generation, inline editing | **DONE** | `POST /documents/analyze-profile`, `PATCH /sessions/{sid}/questions/{qid}`, CandidateProfile & SkillAlignment schemas, Match/Claim/Gap matrix |
-| **Phase 2** | AI Interviewer: Live voice engine, Gemini reasoning (`gemini-3.8-flash` with multi-model fallback to `3.6-flash` and `3.5-flash-lite`), Deepgram Nova-3 STT, Deepgram Aura TTS, audio pre-caching, turn-taking, barge-in, LiveKit data channel interim captions | **DONE** | `workers/voice.py`, TTS pre-caching, `AUTO_ENDPOINT` & explicit Done button, contextual follow-ups, LiveKit data-channel interim captions |
-| **Phase 3** | Two-Camera System: LiveKit laptop & phone WebRTC, QR pairing, independent video feeds, separate consent, phone status sync | **DONE** | `MediaRoom.tsx`, `web/app/phone/page.tsx`, `media.py`, distinct video publication & role-based token minting |
-| **Phase 4** | Server-Side Proctoring: Dual feed frame analysis, frontal/profile face & upper body person detection, evidence snapshots, signed HMAC event chain | **DONE** | `workers/integrity.py`, `TemporalDetector` with `FACE_ABSENT`, `HEAD_TURN_PROLONGED`, `MULTIPLE_PERSONS`, `FRAME_COVERAGE_GAP`, `verify_evidence.py` |
-| **Phase 5** | Explainable Evaluation & Recording: Transcript rubric scoring with exact citations, reviewer overrides, playable session capture with seek shortcuts, duration and provenance tracking | **DONE** | `workers/evaluation.py`, `Assessment` with demonstrated concepts & exact citations, `POST/GET/DELETE /sessions/{sid}/recording`, MediaRecorder with duration and provenance |
-| **Phase 6** | Frontend Polish & Windows Launcher: Single-command startup (`start_verity.ps1` & `start_verity.py`), clean UI, comprehensive report export, clean distribution archive | **DONE** | Visual centerpiece report, overview/assessment/integrity/recording/audit tabs, Windows launcher with automatic dependency & port checks, clean distributable ZIP |
+### Existing Working Components (DO NOT BREAK)
+- `web/components/AIProctorEngine.tsx` — MediaPipe FaceMesh 3D head pose + gaze
+- `web/components/BrowserProctor.tsx` — browser-side proctor events
+- `web/components/MediaRoom.tsx` — LiveKit video rooms, dual camera
+- `web/lib/proctorGeometry.ts` — Z-depth geometry engine
+- `web/lib/lookAwayGate.ts` — gaze detection gate
+- `web/lib/facePresenceGate.ts` — face presence state machine
+- `workers/voice.py` — Deepgram TTS + Gemini question delivery
+- `workers/evaluation.py` — Gemini rubric evaluation
+- `workers/integrity.py` — server-side integrity worker
+- `workers/supervisor.py` — worker lifecycle management
+- `backend/app/main.py` — FastAPI app (37 routes)
+- `backend/app/store.py` — SQLite session store
+- `backend/app/core.py` — interview state machine
+- `backend/app/providers.py` — Gemini/Deepgram/LiveKit adapters
+- `backend/app/evidence.py` — HMAC evidence chain
+- `backend/app/media.py` — recording/upload
+
+### Existing Routes (Frontend - Next.js app router)
+- `web/app/page.tsx` — Recruiter dashboard (raw token auth, NOT proper login)
+- `web/app/interview/page.tsx` — Candidate interview room (fully working)
+- `web/app/phone/page.tsx` — Phone secondary camera page
+
+### Existing Backend API Routes (37 total)
+- All sessions CRUD, questions, documents, consent, events, evidence, evaluate, override, recording, coverage, pairing
+
+### Current Auth (TO REPLACE WITH PROPER ACCOUNTS)
+- Recruiter: raw `RECRUITER_TOKEN` bearer token (paste in UI)
+- Candidate: UUID session ID + candidate token in URL params
+- No proper accounts, no passwords, no roles
+
+### Database
+- SQLite WAL at `data/verity.db`
+
+### Environment Variables
+- `RECRUITER_TOKEN`, `WORKER_TOKEN`, `SIGNING_KEY`, `EVIDENCE_KEY`
+- `LIVEKIT_URL/KEY/SECRET`, `GEMINI_API_KEY`, `DEEPGRAM_API_KEY`
 
 ---
 
-## 3. Verified Provider Integrations
-- **Google Gemini**: Live structured generation verified with `gemini-3.8-flash`, `gemini-3.6-flash`, and `gemini-3.5-flash-lite` fallback on quota limits. Schema validation prevents hallucinated citations.
-- **Deepgram Nova-3**: Real-time streaming WebSocket STT verified.
-- **Deepgram Aura**: Real-time Linear16 PCM speech synthesis verified (`aura-asteria-en`).
-- **LiveKit Cloud**: Cloud room connection, role-scoped token minting, and video streaming verified.
+## IMPLEMENTATION STAGES
+
+### STAGE 1 — Baseline & Git Checkpoint ✅
+### STAGE 2 — Auth Layer (Backend) 🔄
+### STAGE 3 — Jobs & Candidates (Backend)
+### STAGE 4 — Frontend (All Pages)
+### STAGE 5 — Interview Integration with Auth
+### STAGE 6 — PostgreSQL Migration
+### STAGE 7 — Railway Deployment
+### STAGE 8 — E2E Testing
 
 ---
 
-## 4. Exact Startup Instructions
-To launch the complete system on Windows:
-```powershell
-.\start_verity.ps1
-```
-Or cross-platform:
-```bash
-python start_verity.py
-```
-This automatically manages:
-1. Environment and dependency checks.
-2. Port availability check (ports 8000 and 3000).
-3. FastAPI backend (`http://localhost:8000`).
-4. Durable evaluation worker.
-5. Voice and integrity worker supervisor.
-6. Next.js web application (`http://localhost:3000`).
-7. Clean shutdown on Ctrl+C.
+## STAGE COMPLETION LOG
+
+| Stage | Status | Notes |
+|-------|--------|-------|
+| Baseline audit | ✅ DONE | |
+| Stage 1 - Git checkpoint | ✅ DONE | |
+| Stage 2 - Auth backend | 🔄 IN PROGRESS | |
+| Stage 3 - Jobs/Candidates | ⏳ PENDING | |
+| Stage 4 - Frontend pages | ⏳ PENDING | |
+| Stage 5 - Interview integration | ⏳ PENDING | |
+| Stage 6 - PostgreSQL | ⏳ PENDING | |
+| Stage 7 - Railway deployment | ⏳ PENDING | |
+| Stage 8 - E2E testing | ⏳ PENDING | |
