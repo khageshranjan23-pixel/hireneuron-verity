@@ -1,0 +1,87 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: rtpl-postgres
+    restart: always
+    environment:
+      POSTGRES_DB: verity
+      POSTGRES_USER: rtpl_admin
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-RTPLPostgresSecure2026!}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./backend/migrations/001_init_schema.sql:/docker-entrypoint-initdb.d/001_init_schema.sql:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rtpl_admin -d verity"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rtpl-backend
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://rtpl_admin:${POSTGRES_PASSWORD:-RTPLPostgresSecure2026!}@db:5432/verity
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      DEEPGRAM_API_KEY: ${DEEPGRAM_API_KEY}
+      LIVEKIT_URL: ${LIVEKIT_URL}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
+      SIGNING_KEY: ${SIGNING_KEY}
+      RECRUITER_TOKEN: ${RECRUITER_TOKEN}
+      WORKER_TOKEN: ${WORKER_TOKEN}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+    ports:
+      - "8000:8000"
+    volumes:
+      - appdata:/app/data
+
+  workers:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rtpl-workers
+    restart: always
+    depends_on:
+      backend:
+        condition: service_started
+    command: ["python", "scripts/run.py", "workers"]
+    environment:
+      DATABASE_URL: postgresql://rtpl_admin:${POSTGRES_PASSWORD:-RTPLPostgresSecure2026!}@db:5432/verity
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      DEEPGRAM_API_KEY: ${DEEPGRAM_API_KEY}
+      LIVEKIT_URL: ${LIVEKIT_URL}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
+      WORKER_TOKEN: ${WORKER_TOKEN}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      API_INTERNAL_URL: http://backend:8000
+    volumes:
+      - appdata:/app/data
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    container_name: rtpl-web
+    restart: always
+    depends_on:
+      - backend
+    environment:
+      BACKEND_INTERNAL_URL: http://backend:8000
+      NODE_ENV: production
+    ports:
+      - "3000:3000"
+
+volumes:
+  pgdata:
+  appdata:

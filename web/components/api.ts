@@ -148,3 +148,59 @@ export type Session = {
     algorithm?: string;
   }>;
 };
+
+export type RecruitmentJob = {
+  id: string;
+  title: string;
+  department: string;
+  employment_type: string;
+  description: string;
+  required_skills: string;
+  preferred_skills?: string;
+  experience_level: string;
+  difficulty: string;
+  status: 'DRAFT' | 'ACTIVE' | 'CLOSED';
+  created_at: number;
+};
+
+export type Candidate = {
+  id: string;
+  candidate_code: string;
+  full_name: string;
+  email: string;
+  phone?: string;
+  job_id?: string;
+  resume_text?: string;
+  temp_password_unhashed?: string;
+  temp_password?: string;
+  created_at: number;
+};
+
+export type InterviewSchedule = {
+  id: string;
+  session_id: string;
+  candidate_id: string;
+  job_id: string;
+  title: string;
+  scheduled_time: number;
+  duration_minutes: number;
+  early_join_minutes: number;
+  status: string;
+  candidate_name?: string;
+  candidate_code?: string;
+  candidate_email?: string;
+  job_title?: string;
+  job_department?: string;
+  created_at: number;
+};
+
+export type RecruiterMetrics = {
+  total_jobs: number;
+  active_jobs: number;
+  total_candidates: number;
+  upcoming_interviews: number;
+  in_progress_interviews: number;
+  completed_interviews: number;
+  reports_pending_review: number;
+};
+

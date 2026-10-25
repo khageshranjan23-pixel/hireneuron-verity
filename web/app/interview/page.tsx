@@ -23,8 +23,8 @@ import {
   EyeOff,
   Activity
 } from 'lucide-react';
-import { api, BASE } from '../../components/api';
-import MediaRoom from '../../components/MediaRoom';
+import { api, BASE } from '@/components/api';
+import MediaRoom from '@/components/MediaRoom';
 
 export default function CandidateInterview() {
   const [sid, setSid] = useState('');

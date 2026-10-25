@@ -1,8 +1,8 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { ShieldCheck, Smartphone, CheckCircle2, AlertCircle, Video, ArrowRight } from 'lucide-react';
-import { api } from '../../components/api';
-import MediaRoom from '../../components/MediaRoom';
+import { api } from '@/components/api';
+import MediaRoom from '@/components/MediaRoom';
 
 export default function PhonePairingPage() {
   const [nonce, setNonce] = useState('');
@@ -77,7 +77,7 @@ export default function PhonePairingPage() {
       <header className="phoneHeader">
         <div className="phoneBrand">
           <ShieldCheck size={22} className="brandIconSvg" />
-          <span>HireNeuron Verity</span>
+          <span>RTPL · HireNeuron Verity</span>
         </div>
         <span className="phoneStatusBadge">Secondary Camera</span>
       </header>
