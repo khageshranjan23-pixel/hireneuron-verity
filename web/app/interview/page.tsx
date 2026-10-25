@@ -471,6 +471,13 @@ export default function CandidateInterview() {
                     </button>
                   </div>
                 </div>
+
+                <div style={{ marginTop: 14, padding: '10px 14px', background: 'rgba(56, 189, 248, 0.08)', borderRadius: 8, border: '1px solid rgba(56, 189, 248, 0.2)', fontSize: 12, color: '#94a3b8', display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <ShieldCheck size={16} style={{ color: '#38bdf8', flexShrink: 0 }} />
+                  <span>
+                    <strong>Positioning Check:</strong> Ensure your head is centered in the camera preview on the right. You can tap <em>Calibrate</em> anytime to align your natural straight-ahead resting pose.
+                  </span>
+                </div>
               </section>
 
               {/* Step 2: Smartphone Workspace Camera Pairing */}
@@ -603,19 +610,17 @@ export default function CandidateInterview() {
           /* 3. Live Interview Room */
           <div className="interviewLayout">
             <div className="interviewMain">
-              {/* Real-time Proctoring Alert Banner */}
-              {proctoringAlert && (
+              {/* Real-time Proctoring Alert Banner (Only for sustained actionable notices) */}
+              {proctoringAlert && (proctoringAlert.type === 'FACE_ABSENT' || proctoringAlert.type === 'MULTIPLE_PERSONS') && (
                 <div className={`proctoringWarningBanner ${proctoringAlert.severity.toLowerCase()}`}>
                   {proctoringAlert.type === 'MULTIPLE_PERSONS' ? (
-                    <Users size={22} className="alertIconPulse" />
-                  ) : proctoringAlert.type === 'FACE_ABSENT' ? (
-                    <EyeOff size={22} className="alertIconPulse" />
+                    <Users size={20} className="alertIconPulse" />
                   ) : (
-                    <Activity size={22} className="alertIconPulse" />
+                    <EyeOff size={20} className="alertIconPulse" />
                   )}
                   <div className="bannerText">
                     <strong>{proctoringAlert.message}</strong>
-                    <p>Automated proctoring event registered with cryptographic HMAC proof for recruiter audit.</p>
+                    <p>Camera monitoring active · Please maintain your position in frame.</p>
                   </div>
                 </div>
               )}

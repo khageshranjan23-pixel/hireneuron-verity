@@ -15,6 +15,9 @@ export interface DiagnosticsMetrics {
   lastAnalyzedAgeMs: number;
   modelReady: boolean;
   activeFaceCount: number;
+  presenceState?: string;
+  presenceMessage?: string;
+  confirmedOutOfView?: boolean;
   headPose: HeadPoseResult | null;
   eyeGaze: EyeGazeResult | null;
   activeObservation: string | null;
@@ -121,6 +124,34 @@ export default function ProctorDiagnostics({
             >
               <X size={16} />
             </button>
+          </div>
+
+          {/* Section 0: Presence State Machine */}
+          <div style={{ marginBottom: 14, background: '#111827', padding: 8, borderRadius: 6, border: '1px solid #1e293b' }}>
+            <div style={{ color: '#94a3b8', fontSize: 10, textTransform: 'uppercase', marginBottom: 4 }}>
+              Presence State Machine
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <span style={{
+                fontWeight: 700,
+                fontSize: 13,
+                color: metrics.presenceState === 'FACE_PRESENT' ? '#4ade80' :
+                       metrics.presenceState === 'TRACKING_UNCERTAIN' ? '#fbbf24' :
+                       metrics.presenceState === 'CALIBRATING' ? '#38bdf8' :
+                       metrics.presenceState === 'FACE_NOT_VISIBLE' ? '#f97316' :
+                       metrics.presenceState === 'PERSON_OUT_OF_VIEW_CONFIRMED' ? '#ef4444' : '#94a3b8'
+              }}>
+                {metrics.presenceState || 'INITIALIZING'}
+              </span>
+              <span style={{ fontSize: 10, color: '#64748b' }}>
+                {metrics.confirmedOutOfView ? '🚨 Out-of-View Confirmed' : '✓ In-Frame'}
+              </span>
+            </div>
+            {metrics.presenceMessage && (
+              <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>
+                {metrics.presenceMessage}
+              </div>
+            )}
           </div>
 
           {/* Section 1: Performance & Latency */}

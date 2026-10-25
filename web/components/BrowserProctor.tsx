@@ -45,13 +45,14 @@ export default function BrowserProctor({
     };
 
     const onBlur = () => {
-      const warningMsg = 'Window switch detected: Candidate clicked outside interview window.';
-      setWarning('⚠️ ' + warningMsg);
-      onViolation?.(warningMsg, 'NEEDS_REVIEW');
+      if (document.hidden) {
+        const warningMsg = 'Please keep the interview window active.';
+        setWarning('ℹ️ ' + warningMsg);
+      }
     };
 
     const onFocus = () => {
-      setTimeout(() => setWarning(''), 2500);
+      setWarning('');
     };
 
     const onCopy = (e: ClipboardEvent) => {

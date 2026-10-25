@@ -50,8 +50,9 @@ export default function MediaRoom({
 
   // Live telemetry metrics
   const [gazeStatus, setGazeStatus] = useState<'focused' | 'away'>('focused');
-  const [faceStatus, setFaceStatus] = useState<'normal' | 'multiple' | 'absent' | 'cropped'>('normal');
+  const [faceStatus, setFaceStatus] = useState<'normal' | 'multiple' | 'unclear' | 'checking' | 'calibrating' | 'lost' | 'absent'>('checking');
   const [audioStatus, setAudioStatus] = useState<'clean' | 'noisy'>('clean');
+  const [calibrateCount, setCalibrateCount] = useState(0);
 
   // Node references for AIProctorEngine
   const [localMediaStream, setLocalMediaStream] = useState<MediaStream | null>(null);
@@ -102,8 +103,26 @@ export default function MediaRoom({
     }).catch(() => {});
   }, [sid, token, triggerAlert]);
 
+  const faceStatusRef = useRef(faceStatus);
+  faceStatusRef.current = faceStatus;
+
   const handleTelemetryUpdate = useCallback((metrics: any) => {
-    setFaceStatus(metrics.faces === 0 ? 'absent' : metrics.faces > 1 ? 'multiple' : 'normal');
+    // Map the robust gated presence state machine, NOT raw single-frame zero!
+    if (metrics.presenceState === 'PERSON_OUT_OF_VIEW_CONFIRMED') {
+      setFaceStatus('absent');
+    } else if (metrics.presenceState === 'FACE_NOT_VISIBLE') {
+      setFaceStatus('unclear');
+    } else if (metrics.presenceState === 'TRACKING_UNCERTAIN') {
+      setFaceStatus('checking');
+    } else if (metrics.presenceState === 'CALIBRATING') {
+      setFaceStatus('calibrating');
+    } else if (metrics.presenceState === 'CAMERA_CONNECTION_LOST') {
+      setFaceStatus('lost');
+    } else if (metrics.faces > 1) {
+      setFaceStatus('multiple');
+    } else {
+      setFaceStatus('normal');
+    }
     setGazeStatus(metrics.gaze === 'focused' ? 'focused' : 'away');
     setAudioStatus(metrics.audio === 'clean' ? 'clean' : 'noisy');
   }, []);
@@ -191,20 +210,27 @@ export default function MediaRoom({
         } else if (msg.type === 'final') {
           onInterimTranscript?.('');
         } else if (msg.type === 'proctoring') {
-          let text = '⚠️ Proctoring Alert Observed';
+          // If candidate is confirmed present locally, do not let stale server messages override
+          let text = 'ℹ️ Proctoring Observation';
           if (msg.event === 'MULTIPLE_PERSONS') {
-            text = '🚨 CHEATING ALERT: Multiple Persons in Frame!';
+            text = 'Multiple participants observed in camera view';
             setFaceStatus('multiple');
+            triggerAlert(msg.event, text, msg.severity || 'NEEDS_REVIEW');
           } else if (msg.event === 'FACE_ABSENT') {
-            text = '⚠️ WARNING: Face Out of Camera View!';
-            setFaceStatus('absent');
+            // Only alert if local state is also not normal
+            if (faceStatusRef.current === 'absent' || faceStatusRef.current === 'unclear') {
+              text = 'Please ensure you remain clearly positioned in the camera frame';
+              setFaceStatus('absent');
+              triggerAlert(msg.event, text, msg.severity || 'OBSERVED_EVENT');
+            }
           } else if (msg.event === 'GAZE_DEVIATION' || msg.event === 'HEAD_TURN_PROLONGED') {
-            text = '⚠️ SUSPICIOUS: Gaze Diverted / Looking Away from Screen!';
-            setGazeStatus('away');
+            // Gentle reminder
+            text = 'Please remain focused on the interview window';
+            triggerAlert(msg.event, text, 'OBSERVED_EVENT');
           } else if (msg.event === 'FRAME_COVERAGE_GAP') {
-            text = '⚠️ Camera Coverage Gap Detected';
+            text = 'Camera connection temporarily interrupted';
+            triggerAlert(msg.event, text, 'OBSERVED_EVENT');
           }
-          triggerAlert(msg.event, text, msg.severity || 'NEEDS_REVIEW');
         }
       } catch (_) {}
     });
@@ -422,6 +448,7 @@ export default function MediaRoom({
             mediaStream={localMediaStream}
             onViolation={handleProctorViolation}
             onTelemetryUpdate={handleTelemetryUpdate}
+            calibrateTrigger={calibrateCount}
           />
         </>
       )}
@@ -442,13 +469,13 @@ export default function MediaRoom({
               )}
               <div className="alertPillContent">
                 <strong>{currentAlert.message}</strong>
-                <small>Evidence snapshot logged · Cryptographic HMAC sealed</small>
+                <small>Camera monitoring guidance</small>
               </div>
             </div>
           ) : (
             <div className="proctoringCleanPill">
               <ShieldCheck size={14} className="cleanIcon" />
-              <span>Verified 1 Candidate in Frame · Gaze Centered</span>
+              <span>Camera Ready · Monitoring Active</span>
             </div>
           )}
         </div>
@@ -459,28 +486,55 @@ export default function MediaRoom({
       {/* Real-time Telemetry Status Matrix */}
       {!phone && !viewer && (
         <div className="proctoringTelemetryBar">
-          <div className={`telemetryPill ${faceStatus === 'normal' ? 'good' : 'warning'}`}>
+          <div className={`telemetryPill ${faceStatus === 'normal' ? 'good' : faceStatus === 'checking' || faceStatus === 'calibrating' ? 'info' : 'warning'}`}>
             <UserCheck size={12} />
             <span>
               {faceStatus === 'normal'
-                ? 'Face: Centered'
+                ? 'Camera Ready'
                 : faceStatus === 'multiple'
-                ? 'Face: 2+ Persons'
-                : faceStatus === 'cropped'
-                ? 'Face: Edges Cut Off'
-                : 'Face: Absent'}
+                ? 'Multiple Persons'
+                : faceStatus === 'unclear'
+                ? 'Adjust Position'
+                : faceStatus === 'checking'
+                ? 'Checking View'
+                : faceStatus === 'calibrating'
+                ? 'Calibrating…'
+                : faceStatus === 'lost'
+                ? 'Camera Interrupted'
+                : 'Return to View'}
             </span>
           </div>
 
-          <div className={`telemetryPill ${gazeStatus === 'focused' ? 'good' : 'warning'}`}>
+          <div className={`telemetryPill ${gazeStatus === 'focused' ? 'good' : 'info'}`}>
             <Eye size={12} />
-            <span>{gazeStatus === 'focused' ? 'Gaze: On-Screen' : 'Gaze: Away'}</span>
+            <span>{gazeStatus === 'focused' ? 'Gaze: Centered' : 'Gaze: Off-Screen'}</span>
           </div>
 
           <div className={`telemetryPill ${audioStatus === 'clean' ? 'good' : 'warning'}`}>
             <Volume2 size={12} />
             <span>{audioStatus === 'clean' ? 'Audio: Clean' : 'Audio: High Noise'}</span>
           </div>
+
+          <button
+            type="button"
+            onClick={() => setCalibrateCount((c) => c + 1)}
+            style={{
+              background: 'rgba(56, 189, 248, 0.15)',
+              border: '1px solid rgba(56, 189, 248, 0.4)',
+              color: '#38bdf8',
+              borderRadius: 6,
+              padding: '2px 8px',
+              fontSize: 11,
+              fontWeight: 600,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 4
+            }}
+            title="Align your straight-ahead resting pose with the screen"
+          >
+            🎯 Calibrate
+          </button>
         </div>
       )}
 

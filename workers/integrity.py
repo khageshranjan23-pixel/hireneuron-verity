@@ -113,7 +113,7 @@ class ProductionProctor:
         num_faces = len(result.face_landmarks)
         analysis = {
             'face_count': num_faces,
-            'person_count': num_faces,  # face count is best person proxy
+            'person_count': num_faces,  # face count is baseline person proxy
             'gaze_score': 0.0,         # 0=straight, 1=extreme deviation
             'head_yaw': 0.0,           # radians
             'head_pitch': 0.0,         # radians
@@ -121,10 +121,18 @@ class ProductionProctor:
             'looking_away': False,
             'phone_in_hand': False,
             'method': 'mediapipe',
+            'observation_valid': True,
             'face_details': [],
         }
 
         if num_faces == 0:
+            # Fallback to OpenCV profile and HOG people detector to verify if candidate's body is in frame
+            cv_res = self._analyze_opencv(arr)
+            analysis['person_count'] = max(num_faces, cv_res.get('person_count', 0))
+            analysis['face_count'] = cv_res.get('face_count', 0)
+            analysis['head_yaw'] = cv_res.get('head_yaw', 0.0)
+            analysis['method'] = 'mediapipe_fallback_opencv'
+            analysis['observation_valid'] = cv_res.get('observation_valid', True)
             return analysis
 
         for i, landmarks in enumerate(result.face_landmarks):
@@ -252,6 +260,7 @@ class ProductionProctor:
                 'looking_away': len(profiles) > 0 and face_count == 0,
                 'phone_in_hand': False,
                 'method': 'opencv',
+                'observation_valid': True,
                 'face_details': [],
             }
         except Exception as e:
@@ -260,7 +269,9 @@ class ProductionProctor:
                 'face_count': 0, 'person_count': 0,
                 'gaze_score': 0, 'head_yaw': 0, 'head_pitch': 0,
                 'eyes_open': True, 'looking_away': False,
-                'phone_in_hand': False, 'method': 'error', 'face_details': [],
+                'phone_in_hand': False, 'method': 'error',
+                'observation_valid': False,
+                'face_details': [],
             }
 
     def close(self):
@@ -278,12 +289,14 @@ class ProductionTemporalDetector:
 
     # (event_key, threshold_secs, cooldown_secs, severity)
     RULES = [
-        # INSTANT rules (threshold=0 = fire on first occurrence)
-        ('MULTIPLE_PERSONS',    0,    15, 'NEEDS_REVIEW_HIGH'),  # Instant 2+ persons
-        # Short-duration rules
-        ('FACE_ABSENT',         3,    20, 'NEEDS_REVIEW'),        # 3s without face
-        ('GAZE_DEVIATION',      4,    18, 'NEEDS_REVIEW'),        # 4s looking away
-        ('HEAD_TURN_PROLONGED', 3,    18, 'OBSERVED_EVENT'),      # 3s profile view
+        # Multi-person: require 2s of sustained evidence
+        ('MULTIPLE_PERSONS',    2,    20, 'NEEDS_REVIEW_HIGH'),
+        # Face and person absent: require 4s sustained corroborated absence
+        ('FACE_ABSENT',         4,    25, 'NEEDS_REVIEW'),
+        # Gaze deviation: 6s sustained (reading and reflecting are normal)
+        ('GAZE_DEVIATION',      6,    25, 'OBSERVED_EVENT'),
+        # Prolonged head turn: 5s profile view
+        ('HEAD_TURN_PROLONGED', 5,    25, 'OBSERVED_EVENT'),
     ]
 
     def __init__(self):
@@ -294,9 +307,14 @@ class ProductionTemporalDetector:
     def update(self, role: str, analysis: dict, now: float) -> list[dict]:
         events = []
 
+        # Ignore invalid/error frames: do not advance absence or deviation timers on exceptions!
+        if not analysis.get('observation_valid', True) or analysis.get('method') == 'error':
+            return events
+
         conditions = {
             (role, 'MULTIPLE_PERSONS'): analysis['person_count'] >= 2 or analysis['face_count'] >= 2,
-            (role, 'FACE_ABSENT'): role == 'primary' and analysis['face_count'] == 0,
+            # Face absent ONLY when BOTH face AND person are absent (corroborated negative evidence)
+            (role, 'FACE_ABSENT'): role == 'primary' and analysis['face_count'] == 0 and analysis.get('person_count', 0) == 0,
             (role, 'GAZE_DEVIATION'): role == 'primary' and analysis['face_count'] >= 1 and analysis['looking_away'],
             (role, 'HEAD_TURN_PROLONGED'): role == 'primary' and analysis['face_count'] >= 1 and abs(analysis.get('head_yaw', 0)) > 0.45,
         }
