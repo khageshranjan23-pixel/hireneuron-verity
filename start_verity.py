@@ -71,8 +71,8 @@ def main():
     processes.append(p_sup)
     print("  ✓ Voice & Integrity Supervisor launched")
 
-    # 4. Next.js Frontend
-    p_web = subprocess.Popen([NPM_CMD, '--prefix', 'web', 'run', 'dev'])
+    # 4. Next.js Frontend (Production Server)
+    p_web = subprocess.Popen([NPM_CMD, '--prefix', 'web', 'run', 'start'])
     processes.append(p_web)
     print("  ✓ Next.js Frontend launched (http://localhost:3000)")
 
