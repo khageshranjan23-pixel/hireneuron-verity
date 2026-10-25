@@ -6,8 +6,6 @@ services:
     plan: free
     region: oregon
     envVars:
-      - key: PORT
-        value: 3000
       - key: LIVEKIT_URL
         value: wss://hireneuron-7uwkuoe4.livekit.cloud
       - key: LIVEKIT_API_KEY

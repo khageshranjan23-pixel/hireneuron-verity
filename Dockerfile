@@ -1,6 +1,6 @@
 # Multi-stage production cloud container for RTPL HireNeuron Verity
-# Stage 1: Build Next.js frontend
-FROM node:20-alpine AS frontend-builder
+# Stage 1: Build Next.js frontend on Debian Bookworm (matching runner glibc)
+FROM node:20-slim AS frontend-builder
 WORKDIR /app/web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
@@ -9,7 +9,7 @@ ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_ENV=production
 RUN npm run build
 
-# Stage 2: Unified Production Runtime (Python 3.12 + Node.js LTS)
+# Stage 2: Unified Production Runtime (Python 3.12 + Node.js LTS on Debian Bookworm)
 FROM python:3.12-slim AS runner
 
 # Install Node.js LTS and curl

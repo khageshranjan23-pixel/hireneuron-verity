@@ -13,15 +13,16 @@ BACKEND_PID=$!
 # Wait for backend to become ready
 echo "Waiting for FastAPI to initialize..."
 for i in {1..30}; do
-    if curl -s http://127.0.0.1:8000/docs > /dev/null 2>&1; then
+    if curl -s http://127.0.0.1:8000/health > /dev/null 2>&1; then
         echo "FastAPI Backend is ready!"
         break
     fi
     sleep 1
 done
 
-# Start Next.js frontend on public port $PORT (standard for Railway, Render, Koyeb, etc.)
-echo "Starting Next.js Frontend on port ${PORT:-3000}..."
+# Start Next.js frontend on public port $PORT (Render provides dynamic $PORT, defaults to 3000)
+TARGET_PORT="${PORT:-3000}"
+echo "Starting Next.js Frontend on port ${TARGET_PORT}..."
 cd /app/web
 export BACKEND_INTERNAL_URL="http://127.0.0.1:8000"
-exec node node_modules/next/dist/bin/next start -H 0.0.0.0 -p "${PORT:-3000}"
+exec node ./node_modules/next/dist/bin/next start -H 0.0.0.0 -p "${TARGET_PORT}"
